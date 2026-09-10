@@ -1,0 +1,284 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PXL 3D Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #2b1420;
+    --paper: #17111a;
+    --cream: #fff6ee;
+    --coral: #fa4f68;
+    --peach: #ffcda0;
+  }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: var(--paper);
+    font-family: 'Baloo 2', system-ui, -apple-system, sans-serif;
+  }
+  canvas { display: block; }
+
+  #hint {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    color: var(--cream);
+    font-family: 'Baloo 2', system-ui, sans-serif;
+    font-weight: 600;
+    font-size: 13px; letter-spacing: 0.03em;
+    background: rgba(23, 17, 26, 0.35);
+    backdrop-filter: blur(4px);
+    padding: 7px 16px; border-radius: 999px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.6s ease;
+  }
+  #hint.show { opacity: 1; }
+
+  #loading {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px;
+    background: linear-gradient(180deg, var(--coral), var(--peach));
+    z-index: 10;
+    transition: opacity 0.5s ease;
+  }
+  #loading.hide { opacity: 0; pointer-events: none; }
+  #loading .mark {
+    color: var(--cream);
+    font-weight: 700; font-size: 22px; letter-spacing: 0.18em; text-transform: uppercase;
+  }
+  #loading .dots { display: flex; gap: 6px; }
+  #loading .dots span {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--cream);
+    animation: bounce 1.1s infinite ease-in-out;
+  }
+  #loading .dots span:nth-child(2) { animation-delay: 0.15s; }
+  #loading .dots span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes bounce {
+    0%, 80%, 100% { transform: translateY(0); opacity: 0.6; }
+    40% { transform: translateY(-6px); opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #loading .dots span { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="loading"><div class="mark">PXL</div><div class="dots"><span></span><span></span><span></span></div></div>
+<div id="hint">Drag to rotate &middot; Scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { Reflector } from 'three/addons/objects/Reflector.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+function makeGradientTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 2; canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#fa4f68');
+  grad.addColorStop(1, '#ffcda0');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 2, 256);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+scene.background = makeGradientTexture();
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0, 0.6, 4.2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.0;
+controls.minDistance = 1.5;
+controls.maxDistance = 10;
+controls.target.set(0, 0.25, 0);
+controls.addEventListener('start', () => { controls.autoRotate = false; });
+
+// Vertical drag range gets locked in once the model loads and frames the
+// camera (see below) — keeps the view close to the product-shot framing
+// and stops the camera from dipping under the model to see its underside.
+
+const hemi = new THREE.HemisphereLight(0xfff2e6, 0xffb27a, 0.6);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff0e0, 2.2);
+key.position.set(2.4, 2.6, 2.6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 55;
+key.shadow.blurSamples = 30;
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 12;
+key.shadow.camera.left = -4;
+key.shadow.camera.right = 4;
+key.shadow.camera.top = 4;
+key.shadow.camera.bottom = -4;
+key.shadow.bias = -0.0015;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xfff0e0, 0.8);
+fill.position.set(-2.4, 1.6, 1.6);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffe8f0, 0.9);
+rim.position.set(0, 2.0, -2.4);
+scene.add(rim);
+
+const loadingEl = document.getElementById('loading');
+const hintEl = document.getElementById('hint');
+
+// --- Post-processing: subtle bloom for glossy highlights ---
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.12, 0.4, 0.9);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+
+const loader = new GLTFLoader();
+loader.load('pxl_logo.glb', (gltf) => {
+  const model = gltf.scene;
+
+  const box = new THREE.Box3().setFromObject(model);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  model.position.sub(center);
+
+  model.traverse((obj) => {
+    if (obj.isMesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+
+      // Upgrade to MeshPhysicalMaterial with a glossy clearcoat, like painted plastic/toy shells.
+      if (obj.material && obj.material.isMeshStandardMaterial) {
+        const old = obj.material;
+        const physical = new THREE.MeshPhysicalMaterial({
+          color: old.color,
+          map: old.map || null,
+          roughness: Math.min(old.roughness, 0.55),
+          metalness: old.metalness,
+          clearcoat: 0.35,
+          clearcoatRoughness: 0.3,
+          envMapIntensity: 0.6,
+        });
+        obj.material = physical;
+      }
+    }
+  });
+
+  scene.add(model);
+
+  const groundY = box.min.y - center.y;
+
+  // Big, soft blob shadow: a genuinely blurred radial gradient (canvas filter,
+  // not just gradient stops), like stylized product-render shadows, layered
+  // underneath a light real-time contact shadow for grounding detail.
+  function makeBlobShadowTexture() {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 512;
+    const ctx = c.getContext('2d');
+    ctx.filter = 'blur(30px)';
+    const grad = ctx.createRadialGradient(256, 256, 0, 256, 256, 170);
+    grad.addColorStop(0, 'rgba(40,15,25,0.38)');
+    grad.addColorStop(0.55, 'rgba(40,15,25,0.16)');
+    grad.addColorStop(1, 'rgba(40,15,25,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 512, 512);
+    const tex = new THREE.CanvasTexture(c);
+    return tex;
+  }
+  const blobSize = Math.max(size.x, size.z) * 3.8;
+  const blobGeo = new THREE.PlaneGeometry(blobSize, blobSize);
+  const blobMat = new THREE.MeshBasicMaterial({
+    map: makeBlobShadowTexture(),
+    transparent: true,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const blob = new THREE.Mesh(blobGeo, blobMat);
+  blob.rotation.x = -Math.PI / 2;
+  blob.position.y = groundY + 0.001;
+  scene.add(blob);
+
+  const groundGeo = new THREE.PlaneGeometry(50, 50);
+  const groundMat = new THREE.ShadowMaterial({ opacity: 0.13 });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = groundY;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const dist = maxDim * 2.4;
+  camera.position.set(0, size.y * 0.35, dist);
+  controls.target.set(0, 0, 0);
+  controls.update();
+
+  // Lock the vertical drag range to roughly this framing: a little more room
+  // to look down on the piece from above, but only a small buffer below the
+  // starting angle so dragging can't dip under the model to see its underside.
+  const camVec = camera.position.clone().sub(controls.target);
+  const initialPolar = Math.acos(THREE.MathUtils.clamp(camVec.y / camVec.length(), -1, 1));
+  controls.minPolarAngle = Math.max(THREE.MathUtils.degToRad(20), initialPolar - THREE.MathUtils.degToRad(35));
+  controls.maxPolarAngle = Math.min(THREE.MathUtils.degToRad(92), initialPolar + THREE.MathUtils.degToRad(8));
+
+  loadingEl.classList.add('hide');
+  hintEl.classList.add('show');
+  setTimeout(() => { hintEl.style.opacity = ''; }, 4000);
+}, undefined, (err) => {
+  console.error('LOAD_ERROR', err.message || String(err));
+  loadingEl.querySelector('.mark').textContent = 'Could not load model';
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  composer.render();
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
