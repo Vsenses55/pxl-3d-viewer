@@ -21,21 +21,6 @@
   }
   canvas { display: block; }
 
-  #hint {
-    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-    color: var(--cream);
-    font-family: 'Baloo 2', system-ui, sans-serif;
-    font-weight: 600;
-    font-size: 13px; letter-spacing: 0.03em;
-    background: rgba(23, 17, 26, 0.35);
-    backdrop-filter: blur(4px);
-    padding: 7px 16px; border-radius: 999px;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.6s ease;
-  }
-  #hint.show { opacity: 1; }
-
   #loading {
     position: fixed; inset: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -46,9 +31,11 @@
   }
   #loading.hide { opacity: 0; pointer-events: none; }
   #loading .mark {
+    display: none;
     color: var(--cream);
     font-weight: 700; font-size: 22px; letter-spacing: 0.18em; text-transform: uppercase;
   }
+  #loading .mark.show-error { display: block; }
   #loading .dots { display: flex; gap: 6px; }
   #loading .dots span {
     width: 8px; height: 8px; border-radius: 50%; background: var(--cream);
@@ -68,7 +55,6 @@
 <body>
 
 <div id="loading"><div class="mark">PXL</div><div class="dots"><span></span><span></span><span></span></div></div>
-<div id="hint">Drag to rotate &middot; Scroll to zoom</div>
 
 <script type="importmap">
 {
@@ -162,7 +148,6 @@ rim.position.set(0, 2.0, -2.4);
 scene.add(rim);
 
 const loadingEl = document.getElementById('loading');
-const hintEl = document.getElementById('hint');
 
 // --- Post-processing: subtle bloom for glossy highlights ---
 const composer = new EffectComposer(renderer);
@@ -245,7 +230,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   scene.add(ground);
 
   const maxDim = Math.max(size.x, size.y, size.z);
-  const dist = maxDim * 2.4;
+  const dist = maxDim * 2.85;
   camera.position.set(0, size.y * 0.35, dist);
   controls.target.set(0, 0, 0);
   controls.update();
@@ -259,11 +244,11 @@ loader.load('pxl_logo.glb', (gltf) => {
   controls.maxPolarAngle = Math.min(THREE.MathUtils.degToRad(92), initialPolar + THREE.MathUtils.degToRad(8));
 
   loadingEl.classList.add('hide');
-  hintEl.classList.add('show');
-  setTimeout(() => { hintEl.style.opacity = ''; }, 4000);
 }, undefined, (err) => {
   console.error('LOAD_ERROR', err.message || String(err));
-  loadingEl.querySelector('.mark').textContent = 'Could not load model';
+  const markEl = loadingEl.querySelector('.mark');
+  markEl.textContent = 'Could not load model';
+  markEl.classList.add('show-error');
 });
 
 function animate() {
