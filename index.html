@@ -47,14 +47,64 @@
     0%, 80%, 100% { transform: translateY(0); opacity: 0.6; }
     40% { transform: translateY(-6px); opacity: 1; }
   }
+
+  #loading-progress {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    height: 4px;
+    overflow: hidden;
+    background: rgba(23, 17, 26, 0.18);
+  }
+  #loading-progress::before {
+    content: '';
+    position: absolute; inset: 0;
+    width: 40%;
+    background: linear-gradient(90deg, #623673, #ff5de6, #623673);
+    background-size: 200% 100%;
+    animation: loading-sweep 1.6s ease-in-out infinite;
+    border-radius: 999px;
+  }
+  @keyframes loading-sweep {
+    0% { transform: translateX(-120%); background-position: 0% 0; }
+    50% { background-position: 100% 0; }
+    100% { transform: translateX(360%); background-position: 0% 0; }
+  }
+
+  #drag-hint {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(6px);
+    width: 52px; height: 52px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    background: rgba(23, 17, 26, 0.4);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 4px 16px rgba(23, 17, 26, 0.25);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+    z-index: 5;
+  }
+  #drag-hint.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #drag-hint svg { width: 28px; height: 28px; display: block; }
   @media (prefers-reduced-motion: reduce) {
     #loading .dots span { animation: none; }
+    #loading-progress::before { animation: none; left: 0; width: 100%; }
+    #drag-hint { transition: opacity 0.2s ease; }
   }
 </style>
 </head>
 <body>
 
-<div id="loading"><div class="mark">PXL</div><div class="dots"><span></span><span></span><span></span></div></div>
+<div id="loading">
+  <div class="mark">PXL</div>
+  <div class="dots"><span></span><span></span><span></span></div>
+  <div id="loading-progress"></div>
+</div>
+<div id="drag-hint">
+  <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M9 3.5v6.5M9 10L6.5 8M9 10l2.5-2" stroke="#fff6ee" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M15 3.5v6.5M15 10l-2.5-2M15 10l2.5-2" stroke="#fff6ee" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4.5 14.5c1.8-1.6 4-2.4 7.5-2.4s5.7.8 7.5 2.4c-1 2.6-3.7 6-7.5 6s-6.5-3.4-7.5-6z" stroke="#fff6ee" stroke-width="1.4" stroke-linejoin="round"/>
+  </svg>
+</div>
 
 <script type="importmap">
 {
@@ -110,12 +160,24 @@ camera.position.set(0, 0.6, 4.2);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.autoRotate = true;
+controls.autoRotate = false;
 controls.autoRotateSpeed = 1.0;
 controls.minDistance = 1.5;
 controls.maxDistance = 10;
 controls.target.set(0, 0.25, 0);
 controls.addEventListener('start', () => { controls.autoRotate = false; });
+
+let isHovering = false;
+renderer.domElement.addEventListener('mouseenter', () => {
+  isHovering = true;
+  controls.autoRotate = true;
+  dragHintEl.classList.add('show');
+});
+renderer.domElement.addEventListener('mouseleave', () => {
+  isHovering = false;
+  controls.autoRotate = false;
+  dragHintEl.classList.remove('show');
+});
 
 // Vertical drag range gets locked in once the model loads and frames the
 // camera (see below) — keeps the view close to the product-shot framing
@@ -148,6 +210,7 @@ rim.position.set(0, 2.0, -2.4);
 scene.add(rim);
 
 const loadingEl = document.getElementById('loading');
+const dragHintEl = document.getElementById('drag-hint');
 
 // --- Post-processing: subtle bloom for glossy highlights ---
 const composer = new EffectComposer(renderer);
@@ -230,7 +293,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   scene.add(ground);
 
   const maxDim = Math.max(size.x, size.y, size.z);
-  const dist = maxDim * 2.85;
+  const dist = maxDim * 3.3;
   camera.position.set(0, size.y * 0.35, dist);
   controls.target.set(0, 0, 0);
   controls.update();
