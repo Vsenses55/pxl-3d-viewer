@@ -50,23 +50,16 @@
 
   #loading-progress {
     position: absolute; left: 0; right: 0; bottom: 0;
-    height: 4px;
+    height: 5px;
     overflow: hidden;
-    background: rgba(23, 17, 26, 0.18);
+    background: #623673;
   }
-  #loading-progress::before {
-    content: '';
+  #loading-progress-fill {
     position: absolute; inset: 0;
-    width: 40%;
-    background: linear-gradient(90deg, #623673, #ff5de6, #623673);
-    background-size: 200% 100%;
-    animation: loading-sweep 1.6s ease-in-out infinite;
-    border-radius: 999px;
-  }
-  @keyframes loading-sweep {
-    0% { transform: translateX(-120%); background-position: 0% 0; }
-    50% { background-position: 100% 0; }
-    100% { transform: translateX(360%); background-position: 0% 0; }
+    width: 0%;
+    background: #ff5de6;
+    box-shadow: 0 0 10px 1px rgba(255, 93, 230, 0.65);
+    transition: width 0.25s ease-out;
   }
 
   #drag-hint {
@@ -86,7 +79,7 @@
   #drag-hint svg { width: 28px; height: 28px; display: block; }
   @media (prefers-reduced-motion: reduce) {
     #loading .dots span { animation: none; }
-    #loading-progress::before { animation: none; left: 0; width: 100%; }
+    #loading-progress-fill { transition: none; }
     #drag-hint { transition: opacity 0.2s ease; }
   }
 </style>
@@ -96,7 +89,7 @@
 <div id="loading">
   <div class="mark">PXL</div>
   <div class="dots"><span></span><span></span><span></span></div>
-  <div id="loading-progress"></div>
+  <div id="loading-progress"><div id="loading-progress-fill"></div></div>
 </div>
 <div id="drag-hint">
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -211,6 +204,34 @@ scene.add(rim);
 
 const loadingEl = document.getElementById('loading');
 const dragHintEl = document.getElementById('drag-hint');
+const progressFillEl = document.getElementById('loading-progress-fill');
+
+// Loading progress: eases up toward ~90% on its own (so there's always visible
+// forward motion even when we have no real byte-level progress to report),
+// then real progress (when available) can push it further, and it snaps to a
+// full, solid fill the moment the model is actually ready.
+let progressPct = 0;
+let fakeProgressRAF = null;
+function setProgress(pct) {
+  progressPct = Math.max(progressPct, Math.min(pct, 100));
+  progressFillEl.style.width = progressPct + '%';
+}
+function tickFakeProgress() {
+  const target = 90;
+  setProgress(progressPct + (target - progressPct) * 0.02);
+  if (progressPct < target - 0.5) {
+    fakeProgressRAF = requestAnimationFrame(tickFakeProgress);
+  }
+}
+tickFakeProgress();
+function stopProgress() {
+  if (fakeProgressRAF) cancelAnimationFrame(fakeProgressRAF);
+}
+function finishProgress() {
+  stopProgress();
+  progressPct = 100;
+  progressFillEl.style.width = '100%';
+}
 
 // --- Post-processing: subtle bloom for glossy highlights ---
 const composer = new EffectComposer(renderer);
@@ -306,9 +327,15 @@ loader.load('pxl_logo.glb', (gltf) => {
   controls.minPolarAngle = Math.max(THREE.MathUtils.degToRad(20), initialPolar - THREE.MathUtils.degToRad(35));
   controls.maxPolarAngle = Math.min(THREE.MathUtils.degToRad(92), initialPolar + THREE.MathUtils.degToRad(8));
 
-  loadingEl.classList.add('hide');
-}, undefined, (err) => {
+  finishProgress();
+  setTimeout(() => { loadingEl.classList.add('hide'); }, 350);
+}, (xhr) => {
+  if (xhr.lengthComputable) {
+    setProgress((xhr.loaded / xhr.total) * 100);
+  }
+}, (err) => {
   console.error('LOAD_ERROR', err.message || String(err));
+  stopProgress();
   const markEl = loadingEl.querySelector('.mark');
   markEl.textContent = 'Could not load model';
   markEl.classList.add('show-error');
