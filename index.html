@@ -180,8 +180,8 @@ const key = new THREE.DirectionalLight(0xfff0e0, 2.2);
 key.position.set(2.4, 2.6, 2.6);
 key.castShadow = true;
 key.shadow.mapSize.set(2048, 2048);
-key.shadow.radius = 55;
-key.shadow.blurSamples = 30;
+key.shadow.radius = 85;
+key.shadow.blurSamples = 40;
 key.shadow.camera.near = 0.5;
 key.shadow.camera.far = 12;
 key.shadow.camera.left = -4;
@@ -271,6 +271,11 @@ loader.load('pxl_logo.glb', (gltf) => {
           clearcoat: 0.35,
           clearcoatRoughness: 0.3,
           envMapIntensity: 0.6,
+          // Soft warm rim/fresnel glow at grazing angles — reads as a gentle
+          // edge-highlight on the glossy toy-plastic shapes as they rotate.
+          sheen: 0.45,
+          sheenColor: new THREE.Color(0xff9fd6),
+          sheenRoughness: 0.35,
         });
         obj.material = physical;
       }
@@ -290,14 +295,73 @@ loader.load('pxl_logo.glb', (gltf) => {
     const ctx = c.getContext('2d');
     ctx.filter = 'blur(30px)';
     const grad = ctx.createRadialGradient(256, 256, 0, 256, 256, 170);
-    grad.addColorStop(0, 'rgba(40,15,25,0.38)');
-    grad.addColorStop(0.55, 'rgba(40,15,25,0.16)');
-    grad.addColorStop(1, 'rgba(40,15,25,0)');
+    grad.addColorStop(0, 'rgba(122,52,78,0.24)');
+    grad.addColorStop(0.55, 'rgba(122,52,78,0.1)');
+    grad.addColorStop(1, 'rgba(122,52,78,0)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 512, 512);
     const tex = new THREE.CanvasTexture(c);
     return tex;
   }
+  // Subtle reflective floor: a small mirror plane hugging just the model's
+  // footprint. Stock three.js Reflector hardcodes its shader output to full
+  // opacity (gl_FragColor.a = 1.0) and blends with an Overlay mode that reads
+  // as too bright/legible against a colorful backdrop — so its shader is
+  // patched below to add a real radial alpha falloff (fades all the way to
+  // fully transparent well before the plane's geometric edge, which is what
+  // actually removes the visible "box" — you're seeing the true background
+  // through it, not an approximation) and a simple darken-mix blend instead
+  // of Overlay, toned down to a faint gleam rather than a legible mirror.
+  const reflectorSize = Math.max(size.x, size.z) * 1.7;
+  const reflectorGeo = new THREE.PlaneGeometry(reflectorSize, reflectorSize);
+  const groundReflector = new Reflector(reflectorGeo, {
+    color: 0x1a1418,
+    textureWidth: 256,
+    textureHeight: 256,
+    clipBias: 0.0003,
+  });
+  groundReflector.rotation.x = -Math.PI / 2;
+  groundReflector.position.y = groundY - 0.003;
+
+  const reflMat = groundReflector.material;
+  reflMat.transparent = true;
+  reflMat.uniforms.uRadius = { value: reflectorSize / 2 };
+  reflMat.uniforms.uIntensity = { value: 0.18 };
+  reflMat.vertexShader = `
+    uniform mat4 textureMatrix;
+    varying vec4 vUv;
+    varying vec2 vPos;
+    #include <common>
+    #include <logdepthbuf_pars_vertex>
+    void main() {
+      vUv = textureMatrix * vec4( position, 1.0 );
+      vPos = position.xy;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+      #include <logdepthbuf_vertex>
+    }
+  `;
+  reflMat.fragmentShader = `
+    uniform vec3 color;
+    uniform sampler2D tDiffuse;
+    uniform float uRadius;
+    uniform float uIntensity;
+    varying vec4 vUv;
+    varying vec2 vPos;
+    #include <logdepthbuf_pars_fragment>
+    void main() {
+      #include <logdepthbuf_fragment>
+      vec4 base = texture2DProj( tDiffuse, vUv );
+      vec3 blended = mix( base.rgb, color, 0.5 );
+      float dist = length( vPos ) / uRadius;
+      float edgeFade = 1.0 - smoothstep( 0.25, 1.0, dist );
+      gl_FragColor = vec4( blended, edgeFade * uIntensity );
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }
+  `;
+  reflMat.needsUpdate = true;
+  scene.add(groundReflector);
+
   const blobSize = Math.max(size.x, size.z) * 3.8;
   const blobGeo = new THREE.PlaneGeometry(blobSize, blobSize);
   const blobMat = new THREE.MeshBasicMaterial({
@@ -312,7 +376,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   scene.add(blob);
 
   const groundGeo = new THREE.PlaneGeometry(50, 50);
-  const groundMat = new THREE.ShadowMaterial({ opacity: 0.13 });
+  const groundMat = new THREE.ShadowMaterial({ color: 0x4a2436, opacity: 0.09 });
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = groundY;
