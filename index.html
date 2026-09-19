@@ -120,6 +120,29 @@ const RIM_COLOR = 0xff5de6;
 const RIM_POWER = 2.5;
 const RIM_INTENSITY = 0.5;
 
+// Idle floating animation: small decorative props get a gentle independent
+// bob + rotation wobble so the resting "PXL" hero isn't perfectly static
+// before hover. Groups keep visually-paired pieces (a play icon + its
+// button backdrop) moving together instead of drifting apart.
+// Note: GLTFLoader sanitizes node names on import — spaces become
+// underscores and dots are stripped (e.g. "Golden Cylinder" -> "Golden_Cylinder",
+// "Play.001" -> "Play001") — these names match the sanitized form.
+const FLOATERS = [
+  { names: ['Pyramid'], ampY: 0.022, ampRot: 0.06, speed: 0.7, phase: 0.0 },
+  { names: ['Golden_Cylinder'], ampY: 0.016, ampRot: 0.05, speed: 0.9, phase: 1.1 },
+  { names: ['Blue_Ball'], ampY: 0.026, ampRot: 0.08, speed: 0.6, phase: 2.3 },
+  { names: ['Circle_Half'], ampY: 0.018, ampRot: 0.05, speed: 0.8, phase: 3.4 },
+  { names: ['Clouds_Left'], ampY: 0.02, ampRot: 0.03, speed: 0.5, phase: 0.6 },
+  { names: ['Clouds_Right'], ampY: 0.02, ampRot: 0.03, speed: 0.55, phase: 2.0 },
+  { names: ['Blue_Cube'], ampY: 0.02, ampRot: 0.06, speed: 0.75, phase: 4.1 },
+  { names: ['Bubble'], ampY: 0.022, ampRot: 0.07, speed: 0.65, phase: 5.0 },
+  { names: ['Play', 'Button'], ampY: 0.018, ampRot: 0.04, speed: 0.85, phase: 1.7 },
+  { names: ['Play001', 'Button001'], ampY: 0.018, ampRot: 0.04, speed: 0.85, phase: 3.9 },
+  { names: ['Play002', 'Button002'], ampY: 0.018, ampRot: 0.04, speed: 0.85, phase: 5.6 },
+];
+const floaters = [];
+const clock = new THREE.Clock();
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -318,6 +341,24 @@ loader.load('pxl_logo.glb', (gltf) => {
 
   scene.add(model);
 
+  // Set up the idle floaters now that the model's real scale is known.
+  const floatScale = Math.max(size.x, size.y, size.z);
+  FLOATERS.forEach((cfg) => {
+    cfg.names.forEach((name) => {
+      const obj = model.getObjectByName(name);
+      if (!obj) return;
+      floaters.push({
+        obj,
+        baseY: obj.position.y,
+        baseRotZ: obj.rotation.z,
+        ampY: cfg.ampY * floatScale,
+        ampRot: cfg.ampRot,
+        speed: cfg.speed,
+        phase: cfg.phase,
+      });
+    });
+  });
+
   const groundY = box.min.y - center.y;
 
   // Big, soft blob shadow: a genuinely blurred radial gradient (canvas filter,
@@ -449,6 +490,12 @@ loader.load('pxl_logo.glb', (gltf) => {
 
 function animate() {
   requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  for (let i = 0; i < floaters.length; i++) {
+    const f = floaters[i];
+    f.obj.position.y = f.baseY + Math.sin(t * f.speed + f.phase) * f.ampY;
+    f.obj.rotation.z = f.baseRotZ + Math.sin(t * f.speed * 0.8 + f.phase) * f.ampRot;
+  }
   controls.update();
   composer.render();
 }
