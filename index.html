@@ -114,8 +114,14 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 
 // Fresnel rim-light tuning (edge glow added on top of the base sheen).
+// A three.js Layer reserved for flat ground-level helper planes (reflector,
+// blob shadow, shadow catcher) that should stay out of the ambient-occlusion
+// pass's own camera further below, while remaining visible to the main one.
+const AO_EXCLUDED_LAYER = 1;
+
 const RIM_COLOR = 0xff5de6;
 const RIM_POWER = 2.5;
 const RIM_INTENSITY = 0.5;
@@ -171,7 +177,13 @@ scene.background = makeGradientTexture();
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
-const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.01, 100);
+// near/far kept as tight as the scene allows (camera never gets closer than
+// 1.5 or farther than 10 — see controls.min/maxDistance below): a near=0.01,
+// far=100 range (1:10000) starves the depth buffer of precision, which
+// GTAOPass's screen-space position reconstruction is very sensitive to —
+// with that wide a range it was producing garbage occlusion values across
+// most of the frame (visible as a large solid-black rectangle).
+const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.05, 30);
 camera.position.set(0, 0.6, 4.2);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -266,9 +278,56 @@ function whenLoaderMinTimeElapsed(fn) {
   setTimeout(fn, remaining);
 }
 
-// --- Post-processing: subtle bloom for glossy highlights ---
+// --- Post-processing: ambient occlusion, then subtle bloom for glossy highlights ---
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
+
+// Soft GTAO contact-darkening where the little decorative shapes cluster
+// and overlap the letters. screenSpaceRadius keeps the effect consistent
+// regardless of the model's world-unit scale. Kept subtle (low
+// blendIntensity, gentle distanceExponent) so it reads as added depth
+// rather than a visible dark halo — no palette/color change, purely tonal.
+// GTAOPass gets its own camera (kept in sync with the real one every frame)
+// so it can exclude AO_EXCLUDED_LAYER — see where groundReflector/blob/ground
+// are added to the scene for why that layer has to stay out of the AO pass.
+// The main `camera` sees everything (default layer 0, plus layer 1 enabled
+// explicitly), so nothing changes for the actual color pass.
+camera.layers.enable(AO_EXCLUDED_LAYER);
+const aoCamera = camera.clone();
+aoCamera.layers.disableAll();
+aoCamera.layers.enable(0);
+
+const gtaoPass = new GTAOPass(scene, aoCamera, window.innerWidth, window.innerHeight, undefined, {
+  radius: 0.15,
+  screenSpaceRadius: true,
+  distanceExponent: 1.5,
+  thickness: 1,
+  scale: 1,
+  samples: 16,
+  distanceFallOff: 1,
+});
+gtaoPass.output = GTAOPass.OUTPUT.Default;
+gtaoPass.blendIntensity = 0.45;
+
+// GTAOPass's internal normal/depth G-buffer pass renders through a temporary
+// scene.overrideMaterial, but that override only swaps each OBJECT's
+// material — three.js draws scene.background independently of it. Our
+// background is a painted gradient texture, so it was being drawn into that
+// G-buffer pass too, poisoning the depth/normal data over the rectangle the
+// background quad happens to cover and producing near-total (and completely
+// spurious) "occlusion" there. Strip the background for just that one
+// internal render and put it back immediately after, same idea as the
+// Reflector patch above.
+const gtaoRenderOverride = gtaoPass.renderOverride.bind(gtaoPass);
+gtaoPass.renderOverride = function (rendererArg, overrideMaterial, renderTarget, clearColor, clearAlpha) {
+  const prevBackground = scene.background;
+  scene.background = null;
+  gtaoRenderOverride(rendererArg, overrideMaterial, renderTarget, clearColor, clearAlpha);
+  scene.background = prevBackground;
+};
+
+composer.addPass(gtaoPass);
+
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.12, 0.4, 0.9);
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
@@ -434,6 +493,32 @@ loader.load('pxl_logo.glb', (gltf) => {
     }
   `;
   reflMat.needsUpdate = true;
+
+  // Reflector's onBeforeRender does its own nested full-scene render (to
+  // update its mirror texture) every time it's drawn. That nested render
+  // conflicts with any pass that renders the scene through a temporary
+  // scene.overrideMaterial (e.g. GTAOPass's normal/depth G-buffer pre-pass)
+  // — the two renders' internal state stomp on each other and were
+  // corrupting a large rectangular region of the frame to solid black.
+  // Skip the reflection's self-render whenever an override material is
+  // active; it only needs to update for the real color pass.
+  const reflectorOnBeforeRender = groundReflector.onBeforeRender;
+  groundReflector.onBeforeRender = function (rendererArg, sceneArg, cameraArg, ...rest) {
+    if (sceneArg.overrideMaterial) return;
+    reflectorOnBeforeRender.call(this, rendererArg, sceneArg, cameraArg, ...rest);
+  };
+
+  // Flat ground-level helpers (reflector, blob shadow, shadow-catcher) are
+  // put on AO_EXCLUDED_LAYER, kept out of GTAOPass's dedicated camera (see
+  // below) but still visible to the main camera. These are thin decorative
+  // planes, not real occluding geometry — worse, GTAOPass's G-buffer pass
+  // renders the whole scene through a temporary opaque override material,
+  // which ignores each object's actual transparency. Left in, the
+  // reflector's own faded, near-invisible floor renders as a big *fully
+  // opaque* flat quad for that one internal pass, large enough (viewed from
+  // this steep an angle) to fill a huge rectangle of "occluded" black across
+  // most of the frame once blended back in.
+  groundReflector.layers.set(AO_EXCLUDED_LAYER);
   scene.add(groundReflector);
 
   const blobSize = Math.max(size.x, size.z) * 3.8;
@@ -447,6 +532,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   const blob = new THREE.Mesh(blobGeo, blobMat);
   blob.rotation.x = -Math.PI / 2;
   blob.position.y = groundY + 0.001;
+  blob.layers.set(AO_EXCLUDED_LAYER);
   scene.add(blob);
 
   const groundGeo = new THREE.PlaneGeometry(50, 50);
@@ -455,6 +541,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = groundY;
   ground.receiveShadow = true;
+  ground.layers.set(AO_EXCLUDED_LAYER);
   scene.add(ground);
 
   const maxDim = Math.max(size.x, size.y, size.z);
@@ -506,6 +593,17 @@ function animate() {
     f.obj.rotation.z = f.baseRotZ + Math.sin(t * f.speed * 0.8 + f.phase) * f.ampRot;
   }
   controls.update();
+
+  // Keep the AO-only camera locked to the real one every frame (position,
+  // orientation, and projection all change as the user drags/zooms).
+  aoCamera.position.copy(camera.position);
+  aoCamera.quaternion.copy(camera.quaternion);
+  aoCamera.fov = camera.fov;
+  aoCamera.aspect = camera.aspect;
+  aoCamera.near = camera.near;
+  aoCamera.far = camera.far;
+  aoCamera.updateProjectionMatrix();
+
   composer.render();
 }
 animate();
