@@ -115,6 +115,11 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
+// Fresnel rim-light tuning (edge glow added on top of the base sheen).
+const RIM_COLOR = 0xff5de6;
+const RIM_POWER = 2.5;
+const RIM_INTENSITY = 0.5;
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -278,6 +283,35 @@ loader.load('pxl_logo.glb', (gltf) => {
           sheenRoughness: 0.35,
         });
         obj.material = physical;
+
+        // True fresnel rim-light shader: an additive glow along silhouette
+        // edges, independent of the base sheen above. Injected via
+        // onBeforeCompile so it layers on top of the existing PBR shading
+        // rather than replacing it. Tunable via RIM_* constants below.
+        physical.onBeforeCompile = (shader) => {
+          shader.uniforms.rimColor = { value: new THREE.Color(RIM_COLOR) };
+          shader.uniforms.rimPower = { value: RIM_POWER };
+          shader.uniforms.rimIntensity = { value: RIM_INTENSITY };
+          shader.vertexShader = shader.vertexShader
+            .replace(
+              '#include <common>',
+              `#include <common>\nvarying vec3 vRimNormal;\nvarying vec3 vRimView;`
+            )
+            .replace(
+              '#include <begin_vertex>',
+              `#include <begin_vertex>\nvRimNormal = normalize( normalMatrix * normal );\nvRimView = normalize( -( modelViewMatrix * vec4( position, 1.0 ) ).xyz );`
+            );
+          shader.fragmentShader = shader.fragmentShader
+            .replace(
+              '#include <common>',
+              `#include <common>\nuniform vec3 rimColor;\nuniform float rimPower;\nuniform float rimIntensity;\nvarying vec3 vRimNormal;\nvarying vec3 vRimView;`
+            )
+            .replace(
+              '#include <dithering_fragment>',
+              `float rimFresnel = pow( 1.0 - max( dot( normalize( vRimNormal ), normalize( vRimView ) ), 0.0 ), rimPower );\ngl_FragColor.rgb += rimColor * rimFresnel * rimIntensity;\n#include <dithering_fragment>`
+            );
+        };
+        physical.needsUpdate = true;
       }
     }
   });
