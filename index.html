@@ -136,9 +136,8 @@ const FLOATERS = [
   { names: ['Clouds_Right'], ampY: 0.02, ampRot: 0.03, speed: 0.55, phase: 2.0 },
   { names: ['Blue_Cube'], ampY: 0.02, ampRot: 0.06, speed: 0.75, phase: 4.1 },
   { names: ['Bubble'], ampY: 0.022, ampRot: 0.07, speed: 0.65, phase: 5.0 },
-  { names: ['Play', 'Button'], ampY: 0.018, ampRot: 0.04, speed: 0.85, phase: 1.7 },
-  { names: ['Play001', 'Button001'], ampY: 0.018, ampRot: 0.04, speed: 0.85, phase: 3.9 },
-  { names: ['Play002', 'Button002'], ampY: 0.018, ampRot: 0.04, speed: 0.85, phase: 5.6 },
+  // Play/Button icon trio intentionally left out of the float list — Orlando
+  // asked to keep those static.
 ];
 const floaters = [];
 const clock = new THREE.Clock();
@@ -471,6 +470,16 @@ loader.load('pxl_logo.glb', (gltf) => {
   const initialPolar = Math.acos(THREE.MathUtils.clamp(camVec.y / camVec.length(), -1, 1));
   controls.minPolarAngle = Math.max(THREE.MathUtils.degToRad(20), initialPolar - THREE.MathUtils.degToRad(35));
   controls.maxPolarAngle = Math.min(THREE.MathUtils.degToRad(92), initialPolar + THREE.MathUtils.degToRad(8));
+
+  // Warm up every shader program (physical material + custom rim-light
+  // injection, the reflector, bloom, shadow-depth variants) with a hidden
+  // render pass now, while the loading overlay still fully covers the
+  // canvas. Without this, the very first visible frame after the overlay
+  // fades can stutter/flash while the GPU compiles ~140 unique material
+  // programs for the first time — this pushes that cost behind the loader
+  // instead of onto the reveal.
+  renderer.compile(scene, camera);
+  composer.render();
 
   whenLoaderMinTimeElapsed(() => {
     finishProgress();
