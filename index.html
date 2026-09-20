@@ -80,6 +80,12 @@
   }
   #drag-hint.hide { opacity: 0; transform: translateX(-50%) translateY(6px); }
   #drag-hint img { width: 100%; height: 100%; display: block; }
+  @media (max-width: 600px) {
+    #drag-hint { width: 56px; height: 56px; bottom: 18px; }
+  }
+  @media (max-width: 380px) {
+    #drag-hint { width: 46px; height: 46px; bottom: 14px; }
+  }
   @media (prefers-reduced-motion: reduce) {
     #loading .dots span { animation: none; }
     #loading-progress-fill { transition: none; }
