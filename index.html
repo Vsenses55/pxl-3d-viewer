@@ -527,8 +527,27 @@ loader.load('pxl_logo.glb', (gltf) => {
   groundReflector.layers.set(AO_EXCLUDED_LAYER);
   scene.add(groundReflector);
 
+  // Give the blob shadow directionality, so it reads as falling away
+  // from the key light's fixed position instead of a perfectly symmetric
+  // halo (which carries no information about where the light is).
+  //
+  // Horizontal projection of the direction the key light travels in
+  // (light -> origin, continued past the model) — the ground-plane
+  // direction the shadow should trail off toward, since the light itself
+  // never moves. Computed once from the light's fixed position.
+  const lightDirX = -key.position.x;
+  const lightDirZ = -key.position.z;
+  const lightDirLen = Math.hypot(lightDirX, lightDirZ);
+  const shadowDirX = lightDirX / lightDirLen;
+  const shadowDirZ = lightDirZ / lightDirLen;
+  const shadowAzimuth = Math.atan2(shadowDirX, shadowDirZ);
+
+  const BLOB_STRETCH = 1.55; // elongate the blob along the shadow direction
+  const BLOB_OFFSET = Math.max(size.x, size.z) * 0.34; // shift it off-center, away from the light
+
   const blobSize = Math.max(size.x, size.z) * 3.8;
   const blobGeo = new THREE.PlaneGeometry(blobSize, blobSize);
+  blobGeo.scale(1, BLOB_STRETCH, 1);
   const blobMat = new THREE.MeshBasicMaterial({
     map: makeBlobShadowTexture(),
     transparent: true,
@@ -537,9 +556,14 @@ loader.load('pxl_logo.glb', (gltf) => {
   });
   const blob = new THREE.Mesh(blobGeo, blobMat);
   blob.rotation.x = -Math.PI / 2;
-  blob.position.y = groundY + 0.001;
+  blob.position.z = BLOB_OFFSET;
   blob.layers.set(AO_EXCLUDED_LAYER);
-  scene.add(blob);
+
+  const blobPivot = new THREE.Group();
+  blobPivot.position.y = groundY + 0.001;
+  blobPivot.rotation.y = shadowAzimuth;
+  blobPivot.add(blob);
+  scene.add(blobPivot);
 
   const groundGeo = new THREE.PlaneGeometry(50, 50);
   const groundMat = new THREE.ShadowMaterial({ color: 0x4a2436, opacity: 0.09 });
