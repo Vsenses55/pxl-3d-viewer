@@ -154,14 +154,42 @@ const FLOATERS = [
 const floaters = [];
 const clock = new THREE.Clock();
 
+// This page is often embedded in an iframe inside a popup/modal (e.g. a
+// Webflow popup) that starts out hidden and is only shown on demand. While
+// an ancestor element is display:none, the iframe's own rendered viewport
+// collapses to 0x0 — so if our script runs its initial sizing while that's
+// still true, window.innerWidth/innerHeight are 0 and every size derived
+// from them (renderer, camera aspect, post-processing render targets) ends
+// up broken, which reads as a solid black canvas. Fall back to a sane
+// default here so nothing is ever constructed at 0x0; syncSize() below
+// corrects it to the real size as soon as one is available.
+const initW = window.innerWidth || 1280;
+const initH = window.innerHeight || 720;
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setSize(initW, initH);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NoToneMapping;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
+
+// A canvas that sits hidden inside a popup's iframe for a while can have its
+// WebGL context reclaimed by the browser/GPU driver — with no handling for
+// that, the page would be left showing a permanently black canvas with no
+// way to recover. preventDefault() on 'webglcontextlost' is what allows the
+// browser to actually restore the context afterward (without it, browsers
+// generally leave it lost for good); syncSize() on restore makes sure sizing
+// is correct again once the new context is live.
+renderer.domElement.addEventListener('webglcontextlost', (event) => {
+  event.preventDefault();
+  console.warn('[PXL viewer] WebGL context lost — waiting for the browser to restore it.');
+}, false);
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  console.warn('[PXL viewer] WebGL context restored.');
+  syncSize();
+}, false);
 
 const scene = new THREE.Scene();
 
@@ -189,7 +217,7 @@ scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 // GTAOPass's screen-space position reconstruction is very sensitive to —
 // with that wide a range it was producing garbage occlusion values across
 // most of the frame (visible as a large solid-black rectangle).
-const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.05, 30);
+const camera = new THREE.PerspectiveCamera(35, initW / initH, 0.05, 30);
 camera.position.set(0, 0.6, 4.2);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -303,7 +331,7 @@ const aoCamera = camera.clone();
 aoCamera.layers.disableAll();
 aoCamera.layers.enable(0);
 
-const gtaoPass = new GTAOPass(scene, aoCamera, window.innerWidth, window.innerHeight, undefined, {
+const gtaoPass = new GTAOPass(scene, aoCamera, initW, initH, undefined, {
   radius: 0.15,
   screenSpaceRadius: true,
   distanceExponent: 1.5,
@@ -334,7 +362,7 @@ gtaoPass.renderOverride = function (rendererArg, overrideMaterial, renderTarget,
 
 composer.addPass(gtaoPass);
 
-const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.12, 0.4, 0.9);
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(initW, initH), 0.12, 0.4, 0.9);
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
@@ -599,8 +627,20 @@ loader.load('pxl_logo.glb', (gltf) => {
   composer.render();
 
   whenLoaderMinTimeElapsed(() => {
-    finishProgress();
-    setTimeout(() => { loadingEl.classList.add('hide'); }, 350);
+    // Same idea as the shader warm-up above: don't reveal until we know the
+    // canvas is actually sized correctly. If this page is inside an iframe
+    // that's still mid-transition (a popup opening, or an Artifact panel
+    // being mounted/resized), window.innerWidth/innerHeight can be 0 or
+    // still changing frame to frame right up until that transition
+    // settles — reacting to a resize AFTER a bad frame already rendered
+    // still means a visible flash. Waiting here for two consecutive
+    // matching, non-zero readings means the reveal only ever happens once
+    // sizing has actually settled.
+    syncSize();
+    waitForStableSize(() => {
+      finishProgress();
+      setTimeout(() => { loadingEl.classList.add('hide'); }, 350);
+    });
   });
 }, (xhr) => {
   if (xhr.lengthComputable) {
@@ -638,12 +678,57 @@ function animate() {
 }
 animate();
 
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+function syncSize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (!w || !h) return; // still hidden (e.g. mid popup-open transition) — nothing valid to size to yet
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  composer.setSize(window.innerWidth, window.innerHeight);
-});
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+}
+window.addEventListener('resize', syncSize);
+
+// Polls until window.innerWidth/innerHeight are non-zero AND unchanged
+// between two checks ~50ms apart, then calls back — used to gate the
+// loading overlay's reveal so it never happens mid-transition (see the
+// model-load callback above). Never blocks forever: gives up and reveals
+// anyway after ~1.5s, in case something legitimately keeps resizing
+// (better a flicker in that rare case than a stuck loader).
+function waitForStableSize(callback, attempt) {
+  attempt = attempt || 0;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const stable = w && h && w === waitForStableSize._lastW && h === waitForStableSize._lastH;
+  waitForStableSize._lastW = w;
+  waitForStableSize._lastH = h;
+  if (stable || attempt > 30) {
+    callback();
+    return;
+  }
+  requestAnimationFrame(() => setTimeout(() => waitForStableSize(callback, attempt + 1), 50));
+}
+
+// A plain window 'resize' event only fires when the browser window/iframe
+// itself changes size. When this page loads inside a popup's iframe that
+// starts display:none, the iframe's viewport can jump straight from 0x0 to
+// its real size the moment the popup opens — that's a real layout change,
+// but not one guaranteed to dispatch a 'resize' event on this window. A
+// ResizeObserver catches it directly, since it fires on any actual size
+// change of the observed element regardless of what caused it.
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(syncSize);
+  ro.observe(document.documentElement);
+}
+
+// Extra safety net for the same scenario: if sizing was ever captured while
+// hidden (0x0, or the initW/initH fallback above) and nothing else happens
+// to trigger a layout event afterward, catch up shortly after load and
+// whenever the tab/frame becomes visible again.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) syncSize(); });
+window.addEventListener('pageshow', syncSize);
+setTimeout(syncSize, 150);
+setTimeout(syncSize, 600);
 </script>
 </body>
 </html>
