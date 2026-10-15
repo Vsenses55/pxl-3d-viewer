@@ -678,6 +678,29 @@ function animate() {
 }
 animate();
 
+// Draws one real frame right now, outside the normal requestAnimationFrame
+// loop below. Browsers throttle or fully pause rAF callbacks for a window
+// that's occluded, not frontmost, or otherwise deprioritized by the OS
+// compositor — animate() simply stops being called while that's true,
+// freezing the canvas on whatever frame it last drew. If that freeze lands
+// mid-transition (e.g. right as the loading overlay is fading out, or mid
+// resize), what's frozen on screen can be a black or half-composited frame
+// that only clears once the browser resumes delivering rAF callbacks —
+// which normally happens the instant the user interacts with the page.
+// Every place below that knows focus/visibility/size just changed calls
+// this directly instead of waiting on that.
+function forceRender() {
+  controls.update();
+  aoCamera.position.copy(camera.position);
+  aoCamera.quaternion.copy(camera.quaternion);
+  aoCamera.fov = camera.fov;
+  aoCamera.aspect = camera.aspect;
+  aoCamera.near = camera.near;
+  aoCamera.far = camera.far;
+  aoCamera.updateProjectionMatrix();
+  composer.render();
+}
+
 function syncSize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
@@ -686,6 +709,7 @@ function syncSize() {
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
   composer.setSize(w, h);
+  forceRender();
 }
 window.addEventListener('resize', syncSize);
 
@@ -725,10 +749,16 @@ if (window.ResizeObserver) {
 // hidden (0x0, or the initW/initH fallback above) and nothing else happens
 // to trigger a layout event afterward, catch up shortly after load and
 // whenever the tab/frame becomes visible again.
-document.addEventListener('visibilitychange', () => { if (!document.hidden) syncSize(); });
-window.addEventListener('pageshow', syncSize);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncSize(); forceRender(); } });
+window.addEventListener('pageshow', () => { syncSize(); forceRender(); });
+// The signal most directly tied to the rAF-throttling scenario above: the
+// window regaining OS focus doesn't always also fire 'visibilitychange' or
+// 'resize', so it gets its own listener rather than relying on those to
+// cover it too.
+window.addEventListener('focus', () => { syncSize(); forceRender(); });
 setTimeout(syncSize, 150);
 setTimeout(syncSize, 600);
+setTimeout(forceRender, 900);
 </script>
 </body>
 </html>
