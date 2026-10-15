@@ -654,8 +654,26 @@ loader.load('pxl_logo.glb', (gltf) => {
   markEl.classList.add('show-error');
 });
 
+// Temporary diagnostics (safe to leave in — console-only, no visible
+// effect) while tracking down the intermittent black-frame bug: logs
+// whenever a frame takes unusually long to arrive (a stalled/throttled rAF
+// loop, our leading theory) and whenever a render pass itself throws (a
+// different, GL-state-level cause). Open the browser console and reproduce
+// the glitch — whichever of these fires right around the moment it happens
+// tells us which mechanism is actually responsible.
+let lastFrameTime = performance.now();
+const FRAME_GAP_WARN_MS = 400;
+
 function animate() {
   requestAnimationFrame(animate);
+
+  const now = performance.now();
+  const gap = now - lastFrameTime;
+  if (gap > FRAME_GAP_WARN_MS) {
+    console.warn('[PXL viewer] FRAME_GAP', Math.round(gap) + 'ms since last frame', new Date().toISOString());
+  }
+  lastFrameTime = now;
+
   const t = clock.getElapsedTime();
   for (let i = 0; i < floaters.length; i++) {
     const f = floaters[i];
@@ -674,7 +692,11 @@ function animate() {
   aoCamera.far = camera.far;
   aoCamera.updateProjectionMatrix();
 
-  composer.render();
+  try {
+    composer.render();
+  } catch (err) {
+    console.error('[PXL viewer] RENDER_ERROR', err && (err.message || String(err)), new Date().toISOString());
+  }
 }
 animate();
 
@@ -689,7 +711,8 @@ animate();
 // which normally happens the instant the user interacts with the page.
 // Every place below that knows focus/visibility/size just changed calls
 // this directly instead of waiting on that.
-function forceRender() {
+function forceRender(reason) {
+  console.warn('[PXL viewer] forceRender()', reason || '(no reason given)', new Date().toISOString());
   controls.update();
   aoCamera.position.copy(camera.position);
   aoCamera.quaternion.copy(camera.quaternion);
@@ -709,7 +732,7 @@ function syncSize() {
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
   composer.setSize(w, h);
-  forceRender();
+  forceRender('syncSize');
 }
 window.addEventListener('resize', syncSize);
 
@@ -749,16 +772,16 @@ if (window.ResizeObserver) {
 // hidden (0x0, or the initW/initH fallback above) and nothing else happens
 // to trigger a layout event afterward, catch up shortly after load and
 // whenever the tab/frame becomes visible again.
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncSize(); forceRender(); } });
-window.addEventListener('pageshow', () => { syncSize(); forceRender(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncSize(); forceRender('visibilitychange'); } });
+window.addEventListener('pageshow', () => { syncSize(); forceRender('pageshow'); });
 // The signal most directly tied to the rAF-throttling scenario above: the
 // window regaining OS focus doesn't always also fire 'visibilitychange' or
 // 'resize', so it gets its own listener rather than relying on those to
 // cover it too.
-window.addEventListener('focus', () => { syncSize(); forceRender(); });
+window.addEventListener('focus', () => { syncSize(); forceRender('focus'); });
 setTimeout(syncSize, 150);
 setTimeout(syncSize, 600);
-setTimeout(forceRender, 900);
+setTimeout(() => forceRender('900ms-timeout'), 900);
 </script>
 </body>
 </html>
