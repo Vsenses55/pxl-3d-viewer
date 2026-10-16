@@ -166,8 +166,20 @@ const clock = new THREE.Clock();
 const initW = window.innerWidth || 1280;
 const initH = window.innerHeight || 720;
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// Phones/tablets have far less GPU memory and bandwidth than the
+// desktop this was built against. Without this, the full pipeline below
+// (antialiasing, 2x pixel density, a 2048px soft shadow map, a full-res
+// ambient-occlusion pass) can push total GPU memory high enough that
+// mobile Safari kills the tab outright ("A problem repeatedly occurred").
+// Detected once at load via a coarse pointer (touch) or small viewport —
+// trims resolution/quality on those devices without changing anything
+// visually on desktop.
+const isMobile = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+  || Math.min(initW, initH) <= 820
+  || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+const renderer = new THREE.WebGLRenderer({ antialias: !isMobile });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1 : 2));
 renderer.setSize(initW, initH);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NoToneMapping;
@@ -252,9 +264,9 @@ scene.add(hemi);
 const key = new THREE.DirectionalLight(0xfff0e0, 2.2);
 key.position.set(2.4, 2.6, 2.6);
 key.castShadow = true;
-key.shadow.mapSize.set(2048, 2048);
-key.shadow.radius = 85;
-key.shadow.blurSamples = 40;
+key.shadow.mapSize.set(isMobile ? 1024 : 2048, isMobile ? 1024 : 2048);
+key.shadow.radius = isMobile ? 40 : 85;
+key.shadow.blurSamples = isMobile ? 12 : 40;
 key.shadow.camera.near = 0.5;
 key.shadow.camera.far = 12;
 key.shadow.camera.left = -4;
@@ -337,7 +349,7 @@ const gtaoPass = new GTAOPass(scene, aoCamera, initW, initH, undefined, {
   distanceExponent: 1.5,
   thickness: 1,
   scale: 1,
-  samples: 16,
+  samples: isMobile ? 8 : 16,
   distanceFallOff: 1,
 });
 gtaoPass.output = GTAOPass.OUTPUT.Default;
