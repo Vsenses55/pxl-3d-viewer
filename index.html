@@ -189,6 +189,9 @@ renderer.toneMapping = THREE.NoToneMapping;
 // removing it changes how often the black-flicker glitch shows up.
 // Remove this flag entirely once testing is done either way.
 const TEST_DYNAMIC_SHADOW_ENABLED = false;
+const TEST_AO_ENABLED = false;
+const TEST_BLOOM_ENABLED = false;
+const TEST_REFLECTOR_ENABLED = false;
 renderer.shadowMap.enabled = TEST_DYNAMIC_SHADOW_ENABLED;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
@@ -378,10 +381,10 @@ gtaoPass.renderOverride = function (rendererArg, overrideMaterial, renderTarget,
   scene.background = prevBackground;
 };
 
-composer.addPass(gtaoPass);
+if (TEST_AO_ENABLED) composer.addPass(gtaoPass);
 
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(initW, initH), 0.12, 0.4, 0.9);
-composer.addPass(bloomPass);
+if (TEST_BLOOM_ENABLED) composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
 const loader = new GLTFLoader();
@@ -571,7 +574,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   // this steep an angle) to fill a huge rectangle of "occluded" black across
   // most of the frame once blended back in.
   groundReflector.layers.set(AO_EXCLUDED_LAYER);
-  scene.add(groundReflector);
+  if (TEST_REFLECTOR_ENABLED) scene.add(groundReflector);
 
   // Give the blob shadow directionality, so it reads as falling away
   // from the key light's fixed position instead of a perfectly symmetric
