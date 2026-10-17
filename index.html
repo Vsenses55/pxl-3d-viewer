@@ -255,10 +255,25 @@ controls.maxDistance = 10;
 controls.target.set(0, 0.25, 0);
 controls.addEventListener('start', () => { controls.autoRotate = false; });
 
+// Render-on-demand: this page used to render every single frame forever,
+// whether anyone was looking at it or not, partly to drive the idle
+// floater animation. That meant the expensive GPU pipeline (AO, bloom,
+// the mirror floor, formerly the dynamic shadow too) was running
+// continuously for the entire time a visitor had the tab open, not just
+// while they were actually interacting. needsRender gates the expensive
+// part of animate() (see below) so a real frame is only drawn while the
+// camera is actually moving/settling (controls fire 'change' while
+// dragging and during damping decay) or while the floaters are active —
+// which is now tied to hover, same as auto-rotate, instead of running
+// forever from page load.
+let needsRender = true;
+controls.addEventListener('change', () => { needsRender = true; });
+
 let isHovering = false;
 renderer.domElement.addEventListener('mouseenter', () => {
   isHovering = true;
   controls.autoRotate = true;
+  needsRender = true;
   dragHintEl.classList.add('hide');
 });
 renderer.domElement.addEventListener('mouseleave', () => {
@@ -699,13 +714,22 @@ function animate() {
   }
   lastFrameTime = now;
 
-  const t = clock.getElapsedTime();
-  for (let i = 0; i < floaters.length; i++) {
-    const f = floaters[i];
-    f.obj.position.y = f.baseY + Math.sin(t * f.speed + f.phase) * f.ampY;
-    f.obj.rotation.z = f.baseRotZ + Math.sin(t * f.speed * 0.8 + f.phase) * f.ampRot;
+  // Floaters only animate on hover now (matches auto-rotate's existing
+  // hover gate) — this is what lets the page go fully idle (no render
+  // calls at all) the rest of the time instead of animating forever.
+  if (isHovering) {
+    const t = clock.getElapsedTime();
+    for (let i = 0; i < floaters.length; i++) {
+      const f = floaters[i];
+      f.obj.position.y = f.baseY + Math.sin(t * f.speed + f.phase) * f.ampY;
+      f.obj.rotation.z = f.baseRotZ + Math.sin(t * f.speed * 0.8 + f.phase) * f.ampRot;
+    }
+    needsRender = true;
   }
-  controls.update();
+  controls.update(); // cheap CPU math; fires 'change' (-> needsRender = true) while dragging or damping is still settling
+
+  if (!needsRender) return; // nothing changed — skip the expensive GPU work below entirely
+  needsRender = false;
 
   // Keep the AO-only camera locked to the real one every frame (position,
   // orientation, and projection all change as the user drags/zooms).
