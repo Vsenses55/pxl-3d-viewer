@@ -183,7 +183,13 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1 : 2));
 renderer.setSize(initW, initH);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NoToneMapping;
-renderer.shadowMap.enabled = true;
+// --- TEMP TEST FLAG: flip to true to put the real-time dynamic shadow
+// (the 2048px/1024px soft shadow map under the model, the heaviest single
+// pass in the whole pipeline) back on. Set false here to test whether
+// removing it changes how often the black-flicker glitch shows up.
+// Remove this flag entirely once testing is done either way.
+const TEST_DYNAMIC_SHADOW_ENABLED = false;
+renderer.shadowMap.enabled = TEST_DYNAMIC_SHADOW_ENABLED;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
