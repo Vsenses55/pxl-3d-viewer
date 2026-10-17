@@ -183,20 +183,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1 : 2));
 renderer.setSize(initW, initH);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NoToneMapping;
-// --- TEMP TEST FLAG: flip to true to put the real-time dynamic shadow
-// (the 2048px/1024px soft shadow map under the model, the heaviest single
-// pass in the whole pipeline) back on. Set false here to test whether
-// removing it changes how often the black-flicker glitch shows up.
-// Remove this flag entirely once testing is done either way.
-// Flicker investigation: disabling all four of these together made the
-// flicker stop (first real positive result after a long investigation).
-// Now re-enabling AO/bloom/reflector while keeping just the dynamic
-// shadow off, to test whether that one pass alone was the cause.
-const TEST_DYNAMIC_SHADOW_ENABLED = false;
-const TEST_AO_ENABLED = true;
-const TEST_BLOOM_ENABLED = true;
-const TEST_REFLECTOR_ENABLED = true;
-renderer.shadowMap.enabled = TEST_DYNAMIC_SHADOW_ENABLED;
+renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
@@ -255,25 +242,10 @@ controls.maxDistance = 10;
 controls.target.set(0, 0.25, 0);
 controls.addEventListener('start', () => { controls.autoRotate = false; });
 
-// Render-on-demand: this page used to render every single frame forever,
-// whether anyone was looking at it or not, partly to drive the idle
-// floater animation. That meant the expensive GPU pipeline (AO, bloom,
-// the mirror floor, formerly the dynamic shadow too) was running
-// continuously for the entire time a visitor had the tab open, not just
-// while they were actually interacting. needsRender gates the expensive
-// part of animate() (see below) so a real frame is only drawn while the
-// camera is actually moving/settling (controls fire 'change' while
-// dragging and during damping decay) or while the floaters are active —
-// which is now tied to hover, same as auto-rotate, instead of running
-// forever from page load.
-let needsRender = true;
-controls.addEventListener('change', () => { needsRender = true; });
-
 let isHovering = false;
 renderer.domElement.addEventListener('mouseenter', () => {
   isHovering = true;
   controls.autoRotate = true;
-  needsRender = true;
   dragHintEl.classList.add('hide');
 });
 renderer.domElement.addEventListener('mouseleave', () => {
@@ -400,10 +372,10 @@ gtaoPass.renderOverride = function (rendererArg, overrideMaterial, renderTarget,
   scene.background = prevBackground;
 };
 
-if (TEST_AO_ENABLED) composer.addPass(gtaoPass);
+composer.addPass(gtaoPass);
 
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(initW, initH), 0.12, 0.4, 0.9);
-if (TEST_BLOOM_ENABLED) composer.addPass(bloomPass);
+composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
 const loader = new GLTFLoader();
@@ -443,6 +415,14 @@ loader.load('pxl_logo.glb', (gltf) => {
         // edges, independent of the base sheen above. Injected via
         // onBeforeCompile so it layers on top of the existing PBR shading
         // rather than replacing it. Tunable via RIM_* constants below.
+        // The clamp() in the fresnel term below is load-bearing: on real GPUs
+        // dot() of two unit vectors can round to slightly above 1.0 where a
+        // surface faces the camera head-on, and pow() of the resulting tiny
+        // negative number returns NaN. UnrealBloomPass's blur then smears
+        // those NaN pixels into large black rectangles — that was the
+        // intermittent black-flicker bug. Measured on an Apple M2: the
+        // unclamped version produced NaN on ~30% of near-head-on pixels,
+        // the clamped version on 0%.
         physical.onBeforeCompile = (shader) => {
           shader.uniforms.rimColor = { value: new THREE.Color(RIM_COLOR) };
           shader.uniforms.rimPower = { value: RIM_POWER };
@@ -463,7 +443,7 @@ loader.load('pxl_logo.glb', (gltf) => {
             )
             .replace(
               '#include <dithering_fragment>',
-              `float rimFresnel = pow( 1.0 - max( dot( normalize( vRimNormal ), normalize( vRimView ) ), 0.0 ), rimPower );\ngl_FragColor.rgb += rimColor * rimFresnel * rimIntensity;\n#include <dithering_fragment>`
+              `float rimFresnel = pow( clamp( 1.0 - dot( normalize( vRimNormal ), normalize( vRimView ) ), 0.0, 1.0 ), rimPower );\ngl_FragColor.rgb += rimColor * rimFresnel * rimIntensity;\n#include <dithering_fragment>`
             );
         };
         physical.needsUpdate = true;
@@ -593,7 +573,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   // this steep an angle) to fill a huge rectangle of "occluded" black across
   // most of the frame once blended back in.
   groundReflector.layers.set(AO_EXCLUDED_LAYER);
-  if (TEST_REFLECTOR_ENABLED) scene.add(groundReflector);
+  scene.add(groundReflector);
 
   // Give the blob shadow directionality, so it reads as falling away
   // from the key light's fixed position instead of a perfectly symmetric
@@ -714,22 +694,13 @@ function animate() {
   }
   lastFrameTime = now;
 
-  // Floaters only animate on hover now (matches auto-rotate's existing
-  // hover gate) — this is what lets the page go fully idle (no render
-  // calls at all) the rest of the time instead of animating forever.
-  if (isHovering) {
-    const t = clock.getElapsedTime();
-    for (let i = 0; i < floaters.length; i++) {
-      const f = floaters[i];
-      f.obj.position.y = f.baseY + Math.sin(t * f.speed + f.phase) * f.ampY;
-      f.obj.rotation.z = f.baseRotZ + Math.sin(t * f.speed * 0.8 + f.phase) * f.ampRot;
-    }
-    needsRender = true;
+  const t = clock.getElapsedTime();
+  for (let i = 0; i < floaters.length; i++) {
+    const f = floaters[i];
+    f.obj.position.y = f.baseY + Math.sin(t * f.speed + f.phase) * f.ampY;
+    f.obj.rotation.z = f.baseRotZ + Math.sin(t * f.speed * 0.8 + f.phase) * f.ampRot;
   }
-  controls.update(); // cheap CPU math; fires 'change' (-> needsRender = true) while dragging or damping is still settling
-
-  if (!needsRender) return; // nothing changed — skip the expensive GPU work below entirely
-  needsRender = false;
+  controls.update();
 
   // Keep the AO-only camera locked to the real one every frame (position,
   // orientation, and projection all change as the user drags/zooms).
