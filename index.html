@@ -188,10 +188,14 @@ renderer.toneMapping = THREE.NoToneMapping;
 // pass in the whole pipeline) back on. Set false here to test whether
 // removing it changes how often the black-flicker glitch shows up.
 // Remove this flag entirely once testing is done either way.
+// Flicker investigation: disabling all four of these together made the
+// flicker stop (first real positive result after a long investigation).
+// Now re-enabling AO/bloom/reflector while keeping just the dynamic
+// shadow off, to test whether that one pass alone was the cause.
 const TEST_DYNAMIC_SHADOW_ENABLED = false;
-const TEST_AO_ENABLED = false;
-const TEST_BLOOM_ENABLED = false;
-const TEST_REFLECTOR_ENABLED = false;
+const TEST_AO_ENABLED = true;
+const TEST_BLOOM_ENABLED = true;
+const TEST_REFLECTOR_ENABLED = true;
 renderer.shadowMap.enabled = TEST_DYNAMIC_SHADOW_ENABLED;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
