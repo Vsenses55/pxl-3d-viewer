@@ -86,12 +86,66 @@
   @media (max-width: 380px) {
     #drag-hint { width: 46px; height: 46px; bottom: 14px; }
   }
+  /* Dark theme: the loading screen matches the dark scene, so a visitor who
+     chose dark last time never sees a coral flash before the model appears. */
+  :root[data-theme="dark"] #loading { background: linear-gradient(180deg, #1d1b23, #0f0e13); }
+
+  /* Light/dark theme toggle (top-right). Same purple as the drag-hint icon. */
+  #theme-toggle {
+    position: fixed; top: 20px; right: 20px;
+    width: 48px; height: 48px; padding: 0;
+    display: grid; place-items: center;
+    border: 0; border-radius: 50%;
+    background: #623673;
+    color: #fff6ee;
+    box-shadow: 0 6px 18px rgba(43, 20, 32, 0.28);
+    cursor: pointer;
+    z-index: 6;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 0.2s ease, transform 0.2s ease, box-shadow 0.3s ease;
+  }
+  #theme-toggle:hover { background: #7a4592; transform: scale(1.06); }
+  #theme-toggle:active { transform: scale(0.96); }
+  #theme-toggle:focus-visible { outline: 2px solid #ff5de6; outline-offset: 3px; }
+  :root[data-theme="dark"] #theme-toggle { box-shadow: 0 6px 22px rgba(255, 93, 230, 0.25); }
+  #theme-toggle svg {
+    grid-area: 1 / 1;
+    width: 22px; height: 22px;
+    fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+    transition: opacity 0.3s ease, transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  #theme-toggle .icon-moon path, #theme-toggle .icon-sun circle { fill: currentColor; stroke: none; }
+  /* Shows the theme you'd switch TO: a moon in light mode, a sun in dark. */
+  :root:not([data-theme="dark"]) #theme-toggle .icon-sun,
+  :root[data-theme="dark"] #theme-toggle .icon-moon { opacity: 0; transform: rotate(-90deg) scale(0.5); }
+  @media (max-width: 600px) {
+    #theme-toggle { top: 14px; right: 14px; width: 42px; height: 42px; }
+    #theme-toggle svg { width: 20px; height: 20px; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
+    #theme-toggle, #theme-toggle svg { transition: none; }
     #loading .dots span { animation: none; }
     #loading-progress-fill { transition: none; }
     #drag-hint { transition: opacity 0.2s ease; }
   }
 </style>
+<script>
+  // Resolve the theme before first paint so the loading screen already
+  // matches it. Priority: the visitor's own saved choice, then ?theme=dark
+  // or ?theme=light in the URL (lets an embedding page pick the default),
+  // then light.
+  (function () {
+    var theme = 'light';
+    try {
+      var q = new URLSearchParams(location.search).get('theme');
+      if (q === 'dark' || q === 'light') theme = q;
+      var saved = localStorage.getItem('pxl-viewer-theme');
+      if (saved === 'dark' || saved === 'light') theme = saved;
+    } catch (e) {}
+    document.documentElement.setAttribute('data-theme', theme);
+  })();
+</script>
 </head>
 <body>
 
@@ -101,6 +155,10 @@
   <div id="loading-progress"><div id="loading-progress-fill"></div></div>
 </div>
 <div id="drag-hint"><img src="data:image/png;base64,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" alt="Drag to rotate" width="88" height="88"></div>
+<button id="theme-toggle" type="button" aria-label="Switch to dark theme" aria-pressed="false">
+  <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.6A8.6 8.6 0 0 1 9.4 3.6a8.6 8.6 0 1 0 11 11z"/></svg>
+  <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.4"/><path d="M12 2.4v2.2M12 19.4v2.2M2.4 12h2.2M19.4 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M5.2 18.8l1.6-1.6M17.2 6.8l1.6-1.6"/></svg>
+</button>
 
 <script type="importmap">
 {
@@ -205,20 +263,22 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
 
 const scene = new THREE.Scene();
 
-function makeGradientTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 2; canvas.height = 256;
-  const ctx = canvas.getContext('2d');
-  const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, '#fa4f68');
-  grad.addColorStop(1, '#ffcda0');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 2, 256);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+// Backdrop: a vertical gradient painted into a tiny canvas. It's repainted
+// in place (not recreated) when the theme changes, so the switch can
+// crossfade smoothly. The gradient colors live in THEMES below.
+const bgCanvas = document.createElement('canvas');
+bgCanvas.width = 2; bgCanvas.height = 256;
+const bgCtx = bgCanvas.getContext('2d');
+const bgTexture = new THREE.CanvasTexture(bgCanvas);
+bgTexture.colorSpace = THREE.SRGBColorSpace;
+function paintBackground(stops) {
+  const grad = bgCtx.createLinearGradient(0, 0, 0, 256);
+  stops.forEach(([pos, color]) => grad.addColorStop(pos, color));
+  bgCtx.fillStyle = grad;
+  bgCtx.fillRect(0, 0, 2, 256);
+  bgTexture.needsUpdate = true;
 }
-scene.background = makeGradientTexture();
+scene.background = bgTexture;
 
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -378,6 +438,117 @@ const bloomPass = new UnrealBloomPass(new THREE.Vector2(initW, initH), 0.12, 0.4
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
+// --- Light / dark themes ---------------------------------------------------
+// Every value that differs between the two looks lives here. Switching
+// crossfades all of them together (applyThemeMix blends 0 = light .. 1 = dark).
+// The light values are exactly the original look. Nothing here adds or
+// removes lights or changes material types, so switching never forces a
+// shader recompile (which would hitch).
+const THEMES = {
+  light: {
+    bg: ['#fa4f68', '#fd9487', '#ffcda0'], // top, 55%, bottom (middle stop sits on the original 2-color line)
+    hemiSky: 0xfff2e6, hemiGround: 0xffb27a, hemi: 0.6,
+    key: 2.2,
+    fillColor: 0xfff0e0, fill: 0.8,
+    rimColor: 0xffe8f0, rim: 0.9,
+    envMap: 0.6,
+    bloomStrength: 0.12, bloomRadius: 0.4, bloomThreshold: 0.9,
+    reflIntensity: 0.18, reflTint: 0.5, reflScale: 1.0, reflBlur: 0,
+    blobTint: 1.0,
+    contactColor: 0x4a2436, contactOpacity: 0.09,
+    sticks: 0,
+  },
+  dark: {
+    bg: ['#1d1b23', '#2c2934', '#0f0e13'], // charcoal with a lighter horizon band
+    hemiSky: 0xcfc8ff, hemiGround: 0x2a1830, hemi: 0.3,
+    key: 1.8,
+    fillColor: 0xb9c3ff, fill: 0.35,
+    rimColor: 0xff7ad9, rim: 1.7, // pink backlight on the edges
+    envMap: 0.4,
+    bloomStrength: 0.35, bloomRadius: 0.5, bloomThreshold: 0.88,
+    reflIntensity: 0.5, reflTint: 0.35, reflScale: 2.4, reflBlur: 0.004, // bigger, glossier floor; blur makes it read as wet gloss, not glass
+    blobTint: 0.05, // the plum blob would read as a lighter smudge on charcoal; darken it
+    contactColor: 0x000000, contactOpacity: 0.32,
+    sticks: 1, // glowing light sticks fade in
+  },
+};
+
+// Filled in once the model has loaded (they don't exist before that).
+const physicalMats = [];
+const themed = { reflector: null, reflectorMat: null, blobMat: null, groundMat: null, sticks: [], stickMats: [], stickLights: [] };
+
+const _cA = new THREE.Color(), _cB = new THREE.Color();
+function lerpColor(a, b, t, target) { return target.copy(_cA.setHex(a)).lerp(_cB.setHex(b), t); }
+function lerpCss(a, b, t) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = (shift) => Math.round(((pa >> shift) & 255) * (1 - t) + ((pb >> shift) & 255) * t);
+  return `rgb(${ch(16)}, ${ch(8)}, ${ch(0)})`;
+}
+
+let themeMix = 0; // 0 = light, 1 = dark
+function applyThemeMix(t) {
+  themeMix = t;
+  const L = THEMES.light, D = THEMES.dark;
+  const n = (a, b) => a + (b - a) * t;
+  paintBackground([[0, lerpCss(L.bg[0], D.bg[0], t)], [0.55, lerpCss(L.bg[1], D.bg[1], t)], [1, lerpCss(L.bg[2], D.bg[2], t)]]);
+  lerpColor(L.hemiSky, D.hemiSky, t, hemi.color);
+  lerpColor(L.hemiGround, D.hemiGround, t, hemi.groundColor);
+  hemi.intensity = n(L.hemi, D.hemi);
+  key.intensity = n(L.key, D.key);
+  lerpColor(L.fillColor, D.fillColor, t, fill.color);
+  fill.intensity = n(L.fill, D.fill);
+  lerpColor(L.rimColor, D.rimColor, t, rim.color);
+  rim.intensity = n(L.rim, D.rim);
+  for (let i = 0; i < physicalMats.length; i++) physicalMats[i].envMapIntensity = n(L.envMap, D.envMap);
+  bloomPass.strength = n(L.bloomStrength, D.bloomStrength);
+  bloomPass.radius = n(L.bloomRadius, D.bloomRadius);
+  bloomPass.threshold = n(L.bloomThreshold, D.bloomThreshold);
+  if (themed.reflectorMat) {
+    themed.reflectorMat.uniforms.uIntensity.value = n(L.reflIntensity, D.reflIntensity);
+    themed.reflectorMat.uniforms.uTint.value = n(L.reflTint, D.reflTint);
+    themed.reflectorMat.uniforms.uBlur.value = n(L.reflBlur, D.reflBlur);
+    const s = n(L.reflScale, D.reflScale);
+    themed.reflector.scale.set(s, s, 1);
+  }
+  if (themed.blobMat) themed.blobMat.color.setScalar(n(L.blobTint, D.blobTint));
+  if (themed.groundMat) {
+    lerpColor(L.contactColor, D.contactColor, t, themed.groundMat.color);
+    themed.groundMat.opacity = n(L.contactOpacity, D.contactOpacity);
+  }
+  const s = n(L.sticks, D.sticks);
+  for (const m of themed.stickMats) m.opacity = s;
+  for (const m of themed.sticks) m.visible = s > 0.001;
+  for (const l of themed.stickLights) l.intensity = l.userData.fullIntensity * s;
+}
+
+const themeToggleEl = document.getElementById('theme-toggle');
+const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+let themeTweenRAF = null;
+function setTheme(name, animate) {
+  const dark = name === 'dark';
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  themeToggleEl.setAttribute('aria-pressed', String(dark));
+  themeToggleEl.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+  if (themeTweenRAF) cancelAnimationFrame(themeTweenRAF);
+  themeTweenRAF = null;
+  const target = dark ? 1 : 0;
+  if (!animate || reduceMotion) { applyThemeMix(target); return; }
+  const from = themeMix, start = performance.now(), duration = 650;
+  const step = (now) => {
+    const k = Math.min(1, (now - start) / duration);
+    const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; // ease in-out
+    applyThemeMix(from + (target - from) * e);
+    themeTweenRAF = k < 1 ? requestAnimationFrame(step) : null;
+  };
+  themeTweenRAF = requestAnimationFrame(step);
+}
+themeToggleEl.addEventListener('click', () => {
+  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  setTheme(next, true);
+  try { localStorage.setItem('pxl-viewer-theme', next); } catch (e) {}
+});
+setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light', false);
+
 const loader = new GLTFLoader();
 loader.load('pxl_logo.glb', (gltf) => {
   const model = gltf.scene;
@@ -410,6 +581,7 @@ loader.load('pxl_logo.glb', (gltf) => {
           sheenRoughness: 0.35,
         });
         obj.material = physical;
+        physicalMats.push(physical);
 
         // True fresnel rim-light shader: an additive glow along silhouette
         // edges, independent of the base sheen above. Injected via
@@ -503,8 +675,8 @@ loader.load('pxl_logo.glb', (gltf) => {
   const reflectorGeo = new THREE.PlaneGeometry(reflectorSize, reflectorSize);
   const groundReflector = new Reflector(reflectorGeo, {
     color: 0x1a1418,
-    textureWidth: 256,
-    textureHeight: 256,
+    textureWidth: isMobile ? 256 : 512,
+    textureHeight: isMobile ? 256 : 512,
     clipBias: 0.0003,
   });
   groundReflector.rotation.x = -Math.PI / 2;
@@ -514,6 +686,8 @@ loader.load('pxl_logo.glb', (gltf) => {
   reflMat.transparent = true;
   reflMat.uniforms.uRadius = { value: reflectorSize / 2 };
   reflMat.uniforms.uIntensity = { value: 0.18 };
+  reflMat.uniforms.uTint = { value: 0.5 }; // how much the mirror image is darkened toward `color` (theme-driven)
+  reflMat.uniforms.uBlur = { value: 0 }; // glossy blur radius in UV units (0 = sharp, the original light look)
   reflMat.vertexShader = `
     uniform mat4 textureMatrix;
     varying vec4 vUv;
@@ -532,13 +706,24 @@ loader.load('pxl_logo.glb', (gltf) => {
     uniform sampler2D tDiffuse;
     uniform float uRadius;
     uniform float uIntensity;
+    uniform float uTint;
+    uniform float uBlur;
     varying vec4 vUv;
     varying vec2 vPos;
     #include <logdepthbuf_pars_fragment>
     void main() {
       #include <logdepthbuf_fragment>
-      vec4 base = texture2DProj( tDiffuse, vUv );
-      vec3 blended = mix( base.rgb, color, 0.5 );
+      // 9-tap glossy blur, stretched vertically for a wet-floor streak.
+      // With uBlur = 0 every tap is the same texel: identical to the
+      // original sharp lookup.
+      vec2 ruv = vUv.xy / vUv.w;
+      vec2 o = vec2( uBlur, uBlur * 2.5 );
+      vec4 base = texture2D( tDiffuse, ruv ) * 0.2;
+      base += ( texture2D( tDiffuse, ruv + vec2( o.x, 0.0 ) ) + texture2D( tDiffuse, ruv - vec2( o.x, 0.0 ) )
+              + texture2D( tDiffuse, ruv + vec2( 0.0, o.y ) ) + texture2D( tDiffuse, ruv - vec2( 0.0, o.y ) ) ) * 0.1;
+      base += ( texture2D( tDiffuse, ruv + o ) + texture2D( tDiffuse, ruv - o )
+              + texture2D( tDiffuse, ruv + vec2( o.x, -o.y ) ) + texture2D( tDiffuse, ruv + vec2( -o.x, o.y ) ) ) * 0.1;
+      vec3 blended = mix( base.rgb, color, uTint );
       float dist = length( vPos ) / uRadius;
       float edgeFade = 1.0 - smoothstep( 0.25, 1.0, dist );
       gl_FragColor = vec4( blended, edgeFade * uIntensity );
@@ -574,6 +759,8 @@ loader.load('pxl_logo.glb', (gltf) => {
   // most of the frame once blended back in.
   groundReflector.layers.set(AO_EXCLUDED_LAYER);
   scene.add(groundReflector);
+  themed.reflector = groundReflector;
+  themed.reflectorMat = reflMat;
 
   // Give the blob shadow directionality, so it reads as falling away
   // from the key light's fixed position instead of a perfectly symmetric
@@ -612,6 +799,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   blobPivot.rotation.y = shadowAzimuth;
   blobPivot.add(blob);
   scene.add(blobPivot);
+  themed.blobMat = blobMat;
 
   const groundGeo = new THREE.PlaneGeometry(50, 50);
   const groundMat = new THREE.ShadowMaterial({ color: 0x4a2436, opacity: 0.09 });
@@ -621,6 +809,46 @@ loader.load('pxl_logo.glb', (gltf) => {
   ground.receiveShadow = true;
   ground.layers.set(AO_EXCLUDED_LAYER);
   scene.add(ground);
+  themed.groundMat = groundMat;
+
+  // Dark-theme light sticks: three slim glowing bars standing on the floor
+  // (left of the P, in front between the P and X, right of the L), recreated
+  // from Orlando's Blender mood reference. Unlit, over-bright material so
+  // bloom turns them into glows, and each carries a small warm point light
+  // so the letters and the mirror floor pick up their color. In the light
+  // theme they fade out completely and stop rendering. The point lights stay
+  // in the scene at intensity 0 instead of being added/removed, because
+  // changing the number of lights forces every material to recompile.
+  const STICK_COLOR = 0xffd23f;
+  const stickDim = Math.max(size.x, size.y, size.z);
+  const stickH = size.y * 0.24;
+  const stickR = stickDim * 0.011;
+  const stickGeo = new THREE.CapsuleGeometry(stickR, stickH - stickR * 2, 6, 12);
+  const STICK_SPOTS = [
+    [-size.x * 0.5 - size.x * 0.11, 0],                   // left of the P
+    [-size.x * 0.5 + size.x * 0.26, size.z * 0.5 + size.z * 0.12], // front, between P and X
+    [size.x * 0.5 + size.x * 0.09, size.z * 0.05],        // right of the L
+  ];
+  STICK_SPOTS.forEach(([x, z]) => {
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(STICK_COLOR).multiplyScalar(2.6),
+      transparent: true,
+      opacity: 0,
+      toneMapped: false,
+    });
+    const stick = new THREE.Mesh(stickGeo, mat);
+    stick.position.set(x, groundY + stickH / 2, z);
+    stick.visible = false;
+    scene.add(stick);
+    themed.sticks.push(stick);
+    themed.stickMats.push(mat);
+
+    const glow = new THREE.PointLight(STICK_COLOR, 0, stickDim * 1.1, 2);
+    glow.position.set(x, groundY + stickH * 0.6, z);
+    glow.userData.fullIntensity = 0.12 * stickDim * stickDim;
+    scene.add(glow);
+    themed.stickLights.push(glow);
+  });
 
   const maxDim = Math.max(size.x, size.y, size.z);
   const dist = maxDim * 3.3;
@@ -643,8 +871,14 @@ loader.load('pxl_logo.glb', (gltf) => {
   // fades can stutter/flash while the GPU compiles ~140 unique material
   // programs for the first time — this pushes that cost behind the loader
   // instead of onto the reveal.
+  // Bring the newly created objects in line with the current theme, and
+  // make the sticks visible for the warm-up so their shader compiles now
+  // rather than on the first switch to dark.
+  applyThemeMix(themeMix);
+  themed.sticks.forEach((m) => { m.visible = true; });
   renderer.compile(scene, camera);
   composer.render();
+  applyThemeMix(themeMix);
 
   whenLoaderMinTimeElapsed(() => {
     // Same idea as the shader warm-up above: don't reveal until we know the
