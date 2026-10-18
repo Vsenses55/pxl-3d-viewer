@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PXL 3D Viewer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -78,13 +79,12 @@
     transition: opacity 0.35s ease, transform 0.35s ease;
     z-index: 5;
   }
-  #drag-hint.hide { opacity: 0; transform: translateX(-50%) translateY(6px); }
   #drag-hint img { width: 100%; height: 100%; display: block; }
   @media (max-width: 600px) {
-    #drag-hint { width: 56px; height: 56px; bottom: 18px; }
+    #drag-hint { width: 76px; height: 76px; bottom: 20px; }
   }
   @media (max-width: 380px) {
-    #drag-hint { width: 46px; height: 46px; bottom: 14px; }
+    #drag-hint { width: 68px; height: 68px; bottom: 16px; }
   }
   /* Dark theme: the loading screen matches the dark scene, so a visitor who
      chose dark last time never sees a coral flash before the model appears. */
@@ -237,7 +237,12 @@ const isMobile = (window.matchMedia && window.matchMedia('(pointer: coarse)').ma
   || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
 const renderer = new THREE.WebGLRenderer({ antialias: !isMobile });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1 : 2));
+// Pixel density is capped at 2x everywhere. Phones used to be capped at 1x,
+// but that was before the page had a viewport meta tag: phones were laying it
+// out ~980px wide and shrinking it (which is also why the drag hint looked
+// tiny). With the tag, 2x on a phone is still fewer pixels than before
+// (iPhone: 1.3 vs 2.1 megapixels), so it stays inside the mobile memory budget.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(initW, initH);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NoToneMapping;
@@ -306,12 +311,10 @@ let isHovering = false;
 renderer.domElement.addEventListener('mouseenter', () => {
   isHovering = true;
   controls.autoRotate = true;
-  dragHintEl.classList.add('hide');
 });
 renderer.domElement.addEventListener('mouseleave', () => {
   isHovering = false;
   controls.autoRotate = false;
-  dragHintEl.classList.remove('hide');
 });
 
 // Vertical drag range gets locked in once the model loads and frames the
@@ -345,7 +348,6 @@ rim.position.set(0, 2.0, -2.4);
 scene.add(rim);
 
 const loadingEl = document.getElementById('loading');
-const dragHintEl = document.getElementById('drag-hint');
 const progressFillEl = document.getElementById('loading-progress-fill');
 
 // Loading progress: eases up toward ~90% on its own (so there's always visible
