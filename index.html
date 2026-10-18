@@ -456,7 +456,6 @@ const THEMES = {
     reflIntensity: 0.18, reflTint: 0.5, reflScale: 1.0, reflBlur: 0,
     blobTint: 1.0,
     contactColor: 0x4a2436, contactOpacity: 0.09,
-    sticks: 0,
   },
   dark: {
     bg: ['#1d1b23', '#2c2934', '#0f0e13'], // charcoal with a lighter horizon band
@@ -466,16 +465,15 @@ const THEMES = {
     rimColor: 0xff7ad9, rim: 1.7, // pink backlight on the edges
     envMap: 0.4,
     bloomStrength: 0.35, bloomRadius: 0.5, bloomThreshold: 0.88,
-    reflIntensity: 0.5, reflTint: 0.35, reflScale: 2.4, reflBlur: 0.004, // bigger, glossier floor; blur makes it read as wet gloss, not glass
+    reflIntensity: 0.12, reflTint: 0.5, reflScale: 1.6, reflBlur: 0.006, // a faint, soft sheen on the floor, barely noticeable
     blobTint: 0.05, // the plum blob would read as a lighter smudge on charcoal; darken it
     contactColor: 0x000000, contactOpacity: 0.32,
-    sticks: 1, // glowing light sticks fade in
   },
 };
 
 // Filled in once the model has loaded (they don't exist before that).
 const physicalMats = [];
-const themed = { reflector: null, reflectorMat: null, blobMat: null, groundMat: null, sticks: [], stickMats: [], stickLights: [] };
+const themed = { reflector: null, reflectorMat: null, blobMat: null, groundMat: null };
 
 const _cA = new THREE.Color(), _cB = new THREE.Color();
 function lerpColor(a, b, t, target) { return target.copy(_cA.setHex(a)).lerp(_cB.setHex(b), t); }
@@ -515,10 +513,6 @@ function applyThemeMix(t) {
     lerpColor(L.contactColor, D.contactColor, t, themed.groundMat.color);
     themed.groundMat.opacity = n(L.contactOpacity, D.contactOpacity);
   }
-  const s = n(L.sticks, D.sticks);
-  for (const m of themed.stickMats) m.opacity = s;
-  for (const m of themed.sticks) m.visible = s > 0.001;
-  for (const l of themed.stickLights) l.intensity = l.userData.fullIntensity * s;
 }
 
 const themeToggleEl = document.getElementById('theme-toggle');
@@ -811,45 +805,6 @@ loader.load('pxl_logo.glb', (gltf) => {
   scene.add(ground);
   themed.groundMat = groundMat;
 
-  // Dark-theme light sticks: three slim glowing bars standing on the floor
-  // (left of the P, in front between the P and X, right of the L), recreated
-  // from Orlando's Blender mood reference. Unlit, over-bright material so
-  // bloom turns them into glows, and each carries a small warm point light
-  // so the letters and the mirror floor pick up their color. In the light
-  // theme they fade out completely and stop rendering. The point lights stay
-  // in the scene at intensity 0 instead of being added/removed, because
-  // changing the number of lights forces every material to recompile.
-  const STICK_COLOR = 0xffd23f;
-  const stickDim = Math.max(size.x, size.y, size.z);
-  const stickH = size.y * 0.24;
-  const stickR = stickDim * 0.011;
-  const stickGeo = new THREE.CapsuleGeometry(stickR, stickH - stickR * 2, 6, 12);
-  const STICK_SPOTS = [
-    [-size.x * 0.5 - size.x * 0.11, 0],                   // left of the P
-    [-size.x * 0.5 + size.x * 0.26, size.z * 0.5 + size.z * 0.12], // front, between P and X
-    [size.x * 0.5 + size.x * 0.09, size.z * 0.05],        // right of the L
-  ];
-  STICK_SPOTS.forEach(([x, z]) => {
-    const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(STICK_COLOR).multiplyScalar(2.6),
-      transparent: true,
-      opacity: 0,
-      toneMapped: false,
-    });
-    const stick = new THREE.Mesh(stickGeo, mat);
-    stick.position.set(x, groundY + stickH / 2, z);
-    stick.visible = false;
-    scene.add(stick);
-    themed.sticks.push(stick);
-    themed.stickMats.push(mat);
-
-    const glow = new THREE.PointLight(STICK_COLOR, 0, stickDim * 1.1, 2);
-    glow.position.set(x, groundY + stickH * 0.6, z);
-    glow.userData.fullIntensity = 0.12 * stickDim * stickDim;
-    scene.add(glow);
-    themed.stickLights.push(glow);
-  });
-
   const maxDim = Math.max(size.x, size.y, size.z);
   const dist = maxDim * 3.3;
   camera.position.set(0, size.y * 0.35, dist);
@@ -871,14 +826,11 @@ loader.load('pxl_logo.glb', (gltf) => {
   // fades can stutter/flash while the GPU compiles ~140 unique material
   // programs for the first time — this pushes that cost behind the loader
   // instead of onto the reveal.
-  // Bring the newly created objects in line with the current theme, and
-  // make the sticks visible for the warm-up so their shader compiles now
-  // rather than on the first switch to dark.
+  // Bring the newly created objects in line with the current theme before
+  // the shader warm-up below.
   applyThemeMix(themeMix);
-  themed.sticks.forEach((m) => { m.visible = true; });
   renderer.compile(scene, camera);
   composer.render();
-  applyThemeMix(themeMix);
 
   whenLoaderMinTimeElapsed(() => {
     // Same idea as the shader warm-up above: don't reveal until we know the
