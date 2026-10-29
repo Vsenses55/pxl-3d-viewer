@@ -186,6 +186,30 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 // pass's own camera further below, while remaining visible to the main one.
 const AO_EXCLUDED_LAYER = 1;
 
+// Gloss tuning: a near-mirror clearcoat over every surface, like lacquered
+// toy plastic, so the studio environment shows up as crisp highlights.
+const GLOSS = {
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.04,
+  maxRoughness: 0.32,  // base-layer roughness cap (was 0.55)
+};
+
+// Glass tuning: the white parts of the letterforms (and the clouds) become
+// frosted, tinted acrylic — light passes through and picks up the colors
+// behind it. Matched by material name from the GLB.
+const GLASS_MATERIALS = new Set(['SVGMat.048', 'SVGMat.057', 'SVGMat.052', 'Bottom Inset']);
+const GLASS = {
+  transmission: 0.75,  // how see-through: 0 = solid, 1 = clear glass
+  roughness: 0.22,     // frost amount: 0 = clear glass, 0.4 = sandblasted
+  thickness: 0.06,     // relative to model size; drives refraction depth
+  ior: 1.49,           // acrylic
+  attenuationColor: 0xffffff, // tint picked up inside the material (white = none)
+  attenuationDistance: 1.0,
+  mobileOpacity: 0.78, // phones get cheap alpha see-through instead of real transmission
+};
+
+const STUDIO_STRIP_INTENSITY = 6; // brightness of the reflection softboxes
+
 const RIM_COLOR = 0xff5de6;
 const RIM_POWER = 2.5;
 const RIM_INTENSITY = 0.5;
@@ -286,7 +310,24 @@ function paintBackground(stops) {
 scene.background = bgTexture;
 
 const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+// Studio environment for reflections: three.js's RoomEnvironment plus a few
+// long, very bright softbox strips. The strips are what the glossy clearcoat
+// mirrors as crisp streak highlights on curved edges (the "lacquered toy"
+// look); the room alone only gives soft, blurry reflections.
+const studioEnv = new RoomEnvironment();
+{
+  const stripMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 1, 1).multiplyScalar(STUDIO_STRIP_INTENSITY), side: THREE.DoubleSide });
+  const addStrip = (w, h, x, y, z, ry, rx = 0) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), stripMat);
+    m.position.set(x, y, z); m.rotation.set(rx, ry, 0);
+    studioEnv.add(m);
+  };
+  addStrip(0.5, 9, -5.5, 3, 2.5, Math.PI / 2.6);   // tall strip, front-left
+  addStrip(0.5, 9, 5.5, 3, 2.5, -Math.PI / 2.6);   // tall strip, front-right
+  addStrip(10, 0.45, 0, 9.5, 1.5, 0, Math.PI / 2); // long overhead bar
+  addStrip(0.35, 6, 0, 4, -6.5, 0);                // thin back strip (catches rims)
+}
+scene.environment = pmrem.fromScene(studioEnv, 0.02).texture;
 
 // near/far kept as tight as the scene allows (camera never gets closer than
 // 1.5 or farther than 10 — see controls.min/maxDistance below): a near=0.01,
@@ -553,6 +594,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   model.position.sub(center);
+  const modelScale = Math.max(size.x, size.y, size.z);
 
   model.traverse((obj) => {
     if (obj.isMesh) {
@@ -562,13 +604,14 @@ loader.load('pxl_logo.glb', (gltf) => {
       // Upgrade to MeshPhysicalMaterial with a glossy clearcoat, like painted plastic/toy shells.
       if (obj.material && obj.material.isMeshStandardMaterial) {
         const old = obj.material;
+        const isGlass = GLASS_MATERIALS.has(old.name);
         const physical = new THREE.MeshPhysicalMaterial({
           color: old.color,
           map: old.map || null,
-          roughness: Math.min(old.roughness, 0.55),
+          roughness: Math.min(old.roughness, GLOSS.maxRoughness),
           metalness: old.metalness,
-          clearcoat: 0.35,
-          clearcoatRoughness: 0.3,
+          clearcoat: GLOSS.clearcoat,
+          clearcoatRoughness: GLOSS.clearcoatRoughness,
           envMapIntensity: 0.6,
           // Soft warm rim/fresnel glow at grazing angles — reads as a gentle
           // edge-highlight on the glossy toy-plastic shapes as they rotate.
@@ -576,6 +619,24 @@ loader.load('pxl_logo.glb', (gltf) => {
           sheenColor: new THREE.Color(0xff9fd6),
           sheenRoughness: 0.35,
         });
+        if (isGlass) {
+          physical.roughness = GLASS.roughness;
+          physical.sheen = 0; // sheen would fog the glass
+          obj.castShadow = false; // glass shouldn't throw a solid shadow
+          if (isMobile) {
+            // Real transmission costs an extra scene render per frame (and
+            // per reflector render); phones get plain alpha blending, which
+            // reads similarly at phone size and stays inside the memory budget.
+            physical.transparent = true;
+            physical.opacity = GLASS.mobileOpacity;
+          } else {
+            physical.transmission = GLASS.transmission;
+            physical.thickness = GLASS.thickness * modelScale;
+            physical.ior = GLASS.ior;
+            physical.attenuationColor.set(GLASS.attenuationColor);
+            physical.attenuationDistance = GLASS.attenuationDistance * modelScale;
+          }
+        }
         obj.material = physical;
         physicalMats.push(physical);
 
