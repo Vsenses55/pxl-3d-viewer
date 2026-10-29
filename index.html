@@ -208,6 +208,11 @@ const GLASS = {
   mobileOpacity: 0.78, // phones get cheap alpha see-through instead of real transmission
 };
 
+// Meshes kept plain matte white, outside the gloss/glass treatment (the
+// "..." dots on the chat bubble read best as flat white). Names are the
+// GLTFLoader-sanitized form ("Curve.013" -> "Curve013").
+const PLAIN_WHITE_MESHES = new Set(['Curve013']);
+
 const STUDIO_STRIP_INTENSITY = 6; // brightness of the reflection softboxes
 
 const RIM_COLOR = 0xff5de6;
@@ -600,6 +605,14 @@ loader.load('pxl_logo.glb', (gltf) => {
     if (obj.isMesh) {
       obj.castShadow = true;
       obj.receiveShadow = true;
+
+      if (PLAIN_WHITE_MESHES.has(obj.name)) {
+        // This mesh has no material in the GLB, so three.js gives it the glTF
+        // default (metalness 1), which mirrors the environment and turns
+        // grey once roughness drops. Plain non-metal white instead.
+        obj.material = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0, roughness: 0.6, envMapIntensity: 0.6 });
+        return;
+      }
 
       // Upgrade to MeshPhysicalMaterial with a glossy clearcoat, like painted plastic/toy shells.
       if (obj.material && obj.material.isMeshStandardMaterial) {
