@@ -123,7 +123,45 @@
     #theme-toggle svg { width: 20px; height: 20px; }
   }
 
+  /* Weather controls: a pill of icon buttons (rain, snow) to the left of the theme
+     toggle, same purple and same height. The active effect gets a cream
+     fill; tapping it again turns it off. */
+  #weather-controls {
+    position: fixed; top: 20px; right: 80px;
+    display: flex; gap: 2px; padding: 4px;
+    border-radius: 999px;
+    background: #623673;
+    box-shadow: 0 6px 18px rgba(43, 20, 32, 0.28);
+    z-index: 6;
+    transition: box-shadow 0.3s ease;
+  }
+  :root[data-theme="dark"] #weather-controls { box-shadow: 0 6px 22px rgba(255, 93, 230, 0.25); }
+  .weather-btn {
+    width: 40px; height: 40px; padding: 0;
+    display: grid; place-items: center;
+    border: 0; border-radius: 50%;
+    background: transparent;
+    color: rgba(255, 246, 238, 0.75);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+  }
+  .weather-btn:hover { background: rgba(255, 246, 238, 0.14); color: #fff6ee; }
+  .weather-btn:active { transform: scale(0.94); }
+  .weather-btn:focus-visible { outline: 2px solid #ff5de6; outline-offset: 2px; }
+  .weather-btn[aria-pressed="true"] { background: #fff6ee; color: #623673; }
+  .weather-btn svg {
+    width: 20px; height: 20px;
+    fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+  @media (max-width: 600px) {
+    #weather-controls { top: 14px; right: 64px; padding: 3px; }
+    .weather-btn { width: 36px; height: 36px; }
+    .weather-btn svg { width: 18px; height: 18px; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
+    .weather-btn, #weather-controls { transition: none; }
     #theme-toggle, #theme-toggle svg { transition: none; }
     #loading .dots span { animation: none; }
     #loading-progress-fill { transition: none; }
@@ -159,6 +197,14 @@
   <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.6A8.6 8.6 0 0 1 9.4 3.6a8.6 8.6 0 1 0 11 11z"/></svg>
   <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.4"/><path d="M12 2.4v2.2M12 19.4v2.2M2.4 12h2.2M19.4 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M5.2 18.8l1.6-1.6M17.2 6.8l1.6-1.6"/></svg>
 </button>
+<div id="weather-controls" role="group" aria-label="Weather effects">
+  <button type="button" class="weather-btn" data-weather="rain" aria-pressed="false" aria-label="Rain" title="Rain">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14h10a3.5 3.5 0 0 0 .3-6.99A5 5 0 0 0 7.6 8.5 2.75 2.75 0 0 0 7 14z"/><path d="M9 17.5l-1 3M13 17.5l-1 3M17 17.5l-1 3"/></svg>
+  </button>
+  <button type="button" class="weather-btn" data-weather="snow" aria-pressed="false" aria-label="Snow" title="Snow">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5v19M3.8 7.25l16.4 9.5M3.8 16.75l16.4-9.5"/><path d="M9.6 4.3 12 6.3l2.4-2M9.6 19.7 12 17.7l2.4 2"/></svg>
+  </button>
+</div>
 
 <script type="importmap">
 {
@@ -504,6 +550,9 @@ const THEMES = {
     reflIntensity: 0.18, reflTint: 0.5, reflScale: 1.0, reflBlur: 0,
     blobTint: 1.0,
     contactColor: 0x4a2436, contactOpacity: 0.09,
+    // weather look
+    rainColor: 0xffffff, rainOpacity: 0.3, rippleOpacity: 0.3,
+    snowColor: 0xffffff, snowOpacity: 0.95,
   },
   dark: {
     bg: ['#1d1b23', '#2c2934', '#0f0e13'], // charcoal with a lighter horizon band
@@ -516,6 +565,9 @@ const THEMES = {
     reflIntensity: 0.12, reflTint: 0.5, reflScale: 1.6, reflBlur: 0.006, // a faint, soft sheen on the floor, barely noticeable
     blobTint: 0.05, // the plum blob would read as a lighter smudge on charcoal; darken it
     contactColor: 0x000000, contactOpacity: 0.32,
+    // weather look
+    rainColor: 0xb4bccf, rainOpacity: 0.24, rippleOpacity: 0.22,
+    snowColor: 0xffffff, snowOpacity: 0.9,
   },
 };
 
@@ -561,7 +613,261 @@ function applyThemeMix(t) {
     lerpColor(L.contactColor, D.contactColor, t, themed.groundMat.color);
     themed.groundMat.opacity = n(L.contactOpacity, D.contactOpacity);
   }
+  const look = weather.look;
+  lerpColor(L.rainColor, D.rainColor, t, look.rainColor);
+  lerpColor(L.snowColor, D.snowColor, t, look.snowColor);
+  look.rainOpacity = n(L.rainOpacity, D.rainOpacity);
+  look.rippleOpacity = n(L.rippleOpacity, D.rippleOpacity);
+  look.snowOpacity = n(L.snowOpacity, D.snowOpacity);
 }
+
+// --- Weather effects: rain, snow -------------------------------------------------
+// All generated in code (no image or model files). Each effect has a strength
+// (0..1) that eases toward its target, so switching crossfades; at 0 its
+// objects are hidden and cost nothing. They're built once the model has
+// loaded, because they size themselves to it. Rules from earlier bugs:
+// particles live on AO_EXCLUDED_LAYER (GTAO's G-buffer pass would draw them
+// as solid shapes), and the custom shaders avoid anything that can produce
+// NaN (no pow(), ascending smoothstep edges only, depth clamped before
+// dividing).
+const WEATHER_TYPES = ['rain', 'snow'];
+const WEATHER_SPEED = (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) ? 0.3 : 1;
+const weather = {
+  built: false,
+  current: 'none',
+  strength: { rain: 0, snow: 0 },
+  target: { rain: 0, snow: 0 },
+  look: { rainColor: new THREE.Color(), rainOpacity: 0, rippleOpacity: 0, snowColor: new THREE.Color(), snowOpacity: 0 },
+  time: 0,
+  lastT: 0,
+  rain: null, ripples: null, snow: null,
+};
+
+const RAIN_VERT = `
+  uniform float uTime; uniform float uHeight; uniform float uBottom;
+  uniform float uLength; uniform float uSpeed; uniform float uSlant;
+  attribute vec4 aSeed; attribute float aEnd;
+  varying float vHead;
+  void main() {
+    float fall = mod( aSeed.y * uHeight + uTime * uSpeed * aSeed.w, uHeight );
+    vec3 p = vec3( aSeed.x + uSlant * fall, uBottom + uHeight - fall, aSeed.z );
+    p += vec3( -uSlant, 1.0, 0.0 ) * ( aEnd * uLength ); // tail trails up and back
+    vHead = 1.0 - aEnd;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4( p, 1.0 );
+  }`;
+const RAIN_FRAG = `
+  uniform vec3 uColor; uniform float uOpacity;
+  varying float vHead;
+  void main() { gl_FragColor = vec4( uColor, uOpacity * vHead ); }`;
+
+const RIPPLE_VERT = `
+  uniform float uTime; uniform float uRate; uniform float uArea; uniform float uSize; uniform float uFloorY;
+  attribute vec2 aRipple; // x: seed, y: phase offset
+  varying vec2 vUv; varying float vPhase;
+  float hash( float n ) { return fract( sin( n ) * 43758.5453 ); }
+  void main() {
+    float cyc = uTime * uRate + aRipple.y;
+    float phase = fract( cyc );
+    float k = floor( cyc ); // each new ripple lands somewhere new
+    vec2 c = ( vec2( hash( aRipple.x + k * 1.7 ), hash( aRipple.x * 1.3 + k * 2.9 ) ) * 2.0 - 1.0 ) * uArea;
+    float s = uSize * ( 0.25 + 0.75 * phase );
+    vec3 p = vec3( c.x + position.x * s, uFloorY, c.y + position.z * s );
+    vUv = uv; vPhase = phase;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4( p, 1.0 );
+  }`;
+const RIPPLE_FRAG = `
+  uniform vec3 uColor; uniform float uOpacity;
+  varying vec2 vUv; varying float vPhase;
+  void main() {
+    float d = length( vUv - 0.5 ) * 2.0;
+    float ring = smoothstep( 0.7, 0.88, d ) * ( 1.0 - smoothstep( 0.88, 1.0, d ) );
+    gl_FragColor = vec4( uColor, ring * ( 1.0 - vPhase ) * uOpacity );
+  }`;
+
+const SNOW_VERT = `
+  uniform float uTime; uniform float uHeight; uniform float uBottom;
+  uniform float uSpeed; uniform float uSway; uniform float uSize; uniform float uScale;
+  attribute vec4 aSeed; attribute vec2 aSway;
+  varying float vFade;
+  void main() {
+    float fall = mod( aSeed.y * uHeight + uTime * uSpeed * aSway.y, uHeight );
+    vec3 p = vec3(
+      aSeed.x + sin( uTime * 0.8 * aSway.y + aSway.x ) * uSway,
+      uBottom + uHeight - fall,
+      aSeed.z + cos( uTime * 0.6 * aSway.y + aSway.x * 1.7 ) * uSway * 0.7 );
+    vec4 mv = modelViewMatrix * vec4( p, 1.0 );
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = clamp( uSize * aSeed.w * uScale / max( -mv.z, 0.05 ), 1.0, 20.0 );
+    float f = fall / uHeight;
+    vFade = smoothstep( 0.0, 0.08, f ) * ( 1.0 - smoothstep( 0.9, 1.0, f ) );
+  }`;
+const SNOW_FRAG = `
+  uniform vec3 uColor; uniform float uOpacity;
+  varying float vFade;
+  void main() {
+    float d = length( gl_PointCoord - 0.5 );
+    float a = 1.0 - smoothstep( 0.12, 0.5, d );
+    gl_FragColor = vec4( uColor, a * vFade * uOpacity );
+  }`;
+
+function weatherObject(obj) {
+  obj.frustumCulled = false; // positions are computed in the shader
+  obj.layers.set(AO_EXCLUDED_LAYER);
+  scene.add(obj);
+  return obj;
+}
+
+function buildWeather({ groundY, maxDim }) {
+  const span = maxDim * 2.4;   // half-width of the volume the particles fill
+  const height = maxDim * 2.2;
+  const rnd = () => Math.random() * 2 - 1;
+
+  // Rain: thin streaks, animated entirely on the GPU.
+  {
+    const count = isMobile ? 900 : 1400;
+    const slant = 0.12;
+    const seeds = new Float32Array(count * 8);
+    const ends = new Float32Array(count * 2);
+    for (let i = 0; i < count; i++) {
+      const s = [rnd() * span - slant * height * 0.5, Math.random(), rnd() * span, 0.85 + Math.random() * 0.3];
+      seeds.set(s, i * 8); seeds.set(s, i * 8 + 4);
+      ends[i * 2 + 1] = 1;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 6), 3));
+    geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 4));
+    geo.setAttribute('aEnd', new THREE.BufferAttribute(ends, 1));
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 }, uHeight: { value: height }, uBottom: { value: groundY },
+        uLength: { value: maxDim * 0.075 }, uSpeed: { value: maxDim * 2.6 }, uSlant: { value: slant },
+        uColor: { value: new THREE.Color() }, uOpacity: { value: 0 },
+      },
+      vertexShader: RAIN_VERT, fragmentShader: RAIN_FRAG,
+      transparent: true, depthWrite: false,
+    });
+    weather.rain = weatherObject(new THREE.LineSegments(geo, mat));
+  }
+
+  // Rain ripples on the floor: expanding rings that each land somewhere new.
+  {
+    const count = isMobile ? 16 : 40;
+    const base = new THREE.PlaneGeometry(1, 1);
+    base.rotateX(-Math.PI / 2);
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.index = base.index;
+    geo.setAttribute('position', base.getAttribute('position'));
+    geo.setAttribute('uv', base.getAttribute('uv'));
+    const data = new Float32Array(count * 2);
+    for (let i = 0; i < count; i++) { data[i * 2] = Math.random() * 100; data[i * 2 + 1] = Math.random(); }
+    geo.setAttribute('aRipple', new THREE.InstancedBufferAttribute(data, 2));
+    geo.instanceCount = count;
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 }, uRate: { value: 1.3 }, uArea: { value: maxDim * 1.3 },
+        uSize: { value: maxDim * 0.07 }, uFloorY: { value: groundY + 0.002 },
+        uColor: { value: new THREE.Color() }, uOpacity: { value: 0 },
+      },
+      vertexShader: RIPPLE_VERT, fragmentShader: RIPPLE_FRAG,
+      transparent: true, depthWrite: false,
+    });
+    weather.ripples = weatherObject(new THREE.Mesh(geo, mat));
+  }
+
+  // Snow: soft round flakes drifting down with a gentle sway.
+  {
+    const count = isMobile ? 350 : 900;
+    const seeds = new Float32Array(count * 4);
+    const sway = new Float32Array(count * 2);
+    for (let i = 0; i < count; i++) {
+      seeds.set([rnd() * span, Math.random(), rnd() * span, 0.6 + Math.random() * 0.7], i * 4);
+      sway.set([Math.random() * Math.PI * 2, 0.7 + Math.random() * 0.6], i * 2);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 4));
+    geo.setAttribute('aSway', new THREE.BufferAttribute(sway, 2));
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 }, uHeight: { value: height }, uBottom: { value: groundY },
+        uSpeed: { value: maxDim * 0.32 }, uSway: { value: maxDim * 0.045 },
+        uSize: { value: maxDim * 0.009 }, uScale: { value: 1 },
+        uColor: { value: new THREE.Color() }, uOpacity: { value: 0 },
+      },
+      vertexShader: SNOW_VERT, fragmentShader: SNOW_FRAG,
+      transparent: true, depthWrite: false,
+    });
+    weather.snow = weatherObject(new THREE.Points(geo, mat));
+  }
+
+  weather.built = true;
+  for (const w of WEATHER_TYPES) weather.strength[w] = weather.target[w]; // start in the chosen state, no fade on load
+  applyWeatherFrame(0);
+}
+
+const _bufSize = new THREE.Vector2();
+function applyWeatherFrame() {
+  if (!weather.built) return;
+  const st = weather.strength, look = weather.look, time = weather.time;
+
+  const rainOn = st.rain > 0.001;
+  weather.rain.visible = weather.ripples.visible = rainOn;
+  if (rainOn) {
+    const u = weather.rain.material.uniforms, r = weather.ripples.material.uniforms;
+    u.uTime.value = r.uTime.value = time;
+    u.uColor.value.copy(look.rainColor); r.uColor.value.copy(look.rainColor);
+    u.uOpacity.value = look.rainOpacity * st.rain;
+    r.uOpacity.value = look.rippleOpacity * st.rain;
+  }
+
+  const snowOn = st.snow > 0.001;
+  weather.snow.visible = snowOn;
+  if (snowOn) {
+    const u = weather.snow.material.uniforms;
+    u.uTime.value = time;
+    u.uColor.value.copy(look.snowColor);
+    u.uOpacity.value = look.snowOpacity * st.snow;
+    renderer.getDrawingBufferSize(_bufSize);
+    u.uScale.value = (_bufSize.y * 0.5) / Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+  }
+}
+
+function updateWeather() {
+  const now = performance.now() / 1000;
+  const dt = weather.lastT ? Math.min(0.1, now - weather.lastT) : 0;
+  weather.lastT = now;
+  weather.time += dt * WEATHER_SPEED;
+  const k = Math.min(1, dt * 4.5); // ~0.7s crossfade
+  for (const w of WEATHER_TYPES) {
+    let s = weather.strength[w] + (weather.target[w] - weather.strength[w]) * k;
+    if (Math.abs(s - weather.target[w]) < 0.002) s = weather.target[w];
+    weather.strength[w] = s;
+  }
+  applyWeatherFrame(dt);
+}
+
+const weatherBtns = Array.from(document.querySelectorAll('.weather-btn'));
+function setWeather(name, persist) {
+  weather.current = WEATHER_TYPES.includes(name) ? name : 'none';
+  for (const b of weatherBtns) b.setAttribute('aria-pressed', String(b.dataset.weather === weather.current));
+  for (const w of WEATHER_TYPES) weather.target[w] = w === weather.current ? 1 : 0;
+  if (persist) { try { localStorage.setItem('pxl-viewer-weather', weather.current); } catch (e) {} }
+}
+weatherBtns.forEach((b) => b.addEventListener('click', () => {
+  setWeather(weather.current === b.dataset.weather ? 'none' : b.dataset.weather, true);
+}));
+// Starting weather: the visitor's own saved choice, then ?weather=rain|snow
+// in the URL (handy for demos and embeds), then none.
+(function () {
+  let w = 'none';
+  try {
+    const q = new URLSearchParams(location.search).get('weather');
+    if (WEATHER_TYPES.includes(q)) w = q;
+    const saved = localStorage.getItem('pxl-viewer-weather');
+    if (saved === 'none' || WEATHER_TYPES.includes(saved)) w = saved;
+  } catch (e) {}
+  setWeather(w, false);
+})();
 
 const themeToggleEl = document.getElementById('theme-toggle');
 const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
@@ -895,6 +1201,8 @@ loader.load('pxl_logo.glb', (gltf) => {
   controls.minPolarAngle = Math.max(THREE.MathUtils.degToRad(20), initialPolar - THREE.MathUtils.degToRad(35));
   controls.maxPolarAngle = Math.min(THREE.MathUtils.degToRad(92), initialPolar + THREE.MathUtils.degToRad(8));
 
+  buildWeather({ groundY, maxDim });
+
   // Warm up every shader program (physical material + custom rim-light
   // injection, the reflector, bloom, shadow-depth variants) with a hidden
   // render pass now, while the loading overlay still fully covers the
@@ -905,8 +1213,12 @@ loader.load('pxl_logo.glb', (gltf) => {
   // Bring the newly created objects in line with the current theme before
   // the shader warm-up below.
   applyThemeMix(themeMix);
+  // Weather objects are made visible for the warm-up so their shaders
+  // compile now, not on the first click; applyWeatherFrame restores them.
+  [weather.rain, weather.ripples, weather.snow].forEach((o) => { o.visible = true; });
   renderer.compile(scene, camera);
   composer.render();
+  applyWeatherFrame(0);
 
   whenLoaderMinTimeElapsed(() => {
     // Same idea as the shader warm-up above: don't reveal until we know the
@@ -962,6 +1274,7 @@ function animate() {
     f.obj.position.y = f.baseY + Math.sin(t * f.speed + f.phase) * f.ampY;
     f.obj.rotation.z = f.baseRotZ + Math.sin(t * f.speed * 0.8 + f.phase) * f.ampRot;
   }
+  updateWeather();
   controls.update();
 
   // Keep the AO-only camera locked to the real one every frame (position,
