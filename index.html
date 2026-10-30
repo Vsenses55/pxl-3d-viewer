@@ -553,7 +553,7 @@ const THEMES = {
     // white glass parts: see-through amount, frost, and a faint inner glow
     glassTransmission: 0.75, glassFrost: 0.22, glassGlow: 0, glassMobileOpacity: 0.78,
     // weather look
-    rainColor: 0xffffff, rainOpacity: 0.3, rippleOpacity: 0.3,
+    rainColor: 0xffffff, rainOpacity: 0.3, rippleOpacity: 0.4,
     snowColor: 0xffffff, snowOpacity: 0.95,
   },
   dark: {
@@ -571,7 +571,7 @@ const THEMES = {
     // a soft white inner glow keep it reading as milky white acrylic.
     glassTransmission: 0.4, glassFrost: 0.32, glassGlow: 0.12, glassMobileOpacity: 0.92,
     // weather look
-    rainColor: 0xb4bccf, rainOpacity: 0.24, rippleOpacity: 0.22,
+    rainColor: 0xb4bccf, rainOpacity: 0.24, rippleOpacity: 0.3,
     snowColor: 0xffffff, snowOpacity: 0.9,
   },
 };
@@ -654,7 +654,7 @@ const weather = {
   look: { rainColor: new THREE.Color(), rainOpacity: 0, rippleOpacity: 0, snowColor: new THREE.Color(), snowOpacity: 0 },
   time: 0,
   lastT: 0,
-  rain: null, ripples: null, snow: null,
+  rain: null, ripples: null, topRipples: null, snow: null,
 };
 
 const RAIN_VERT = `
@@ -674,8 +674,17 @@ const RAIN_FRAG = `
   varying float vHead;
   void main() { gl_FragColor = vec4( uColor, uOpacity * vHead ); }`;
 
+// Raindrop ripples. One quad per ripple; the rings are drawn in the fragment
+// shader. Each landing: a brief bright splash point, then a thin leading ring
+// that races out and slows down, with two fainter rings trailing inside it,
+// all softening and fading as they spread (like a drop on a puddle).
+// SPOTS: instead of anywhere on the floor, land on precomputed points on the
+// tops of the letters (uSpots, found by raycasting at load).
 const RIPPLE_VERT = `
   uniform float uTime; uniform float uRate; uniform float uArea; uniform float uSize; uniform float uFloorY;
+  #ifdef SPOTS
+  uniform vec3 uSpots[ SPOT_COUNT ];
+  #endif
   attribute vec2 aRipple; // x: seed, y: phase offset
   varying vec2 vUv; varying float vPhase;
   float hash( float n ) { return fract( sin( n ) * 43758.5453 ); }
@@ -683,19 +692,34 @@ const RIPPLE_VERT = `
     float cyc = uTime * uRate + aRipple.y;
     float phase = fract( cyc );
     float k = floor( cyc ); // each new ripple lands somewhere new
-    vec2 c = ( vec2( hash( aRipple.x + k * 1.7 ), hash( aRipple.x * 1.3 + k * 2.9 ) ) * 2.0 - 1.0 ) * uArea;
-    float s = uSize * ( 0.25 + 0.75 * phase );
-    vec3 p = vec3( c.x + position.x * s, uFloorY, c.y + position.z * s );
+    #ifdef SPOTS
+    int idx = int( min( floor( hash( aRipple.x + k * 1.7 ) * float( SPOT_COUNT ) ), float( SPOT_COUNT - 1 ) ) );
+    vec3 c = uSpots[ idx ];
+    #else
+    vec2 xz = ( vec2( hash( aRipple.x + k * 1.7 ), hash( aRipple.x * 1.3 + k * 2.9 ) ) * 2.0 - 1.0 ) * uArea;
+    vec3 c = vec3( xz.x, uFloorY, xz.y );
+    #endif
+    float s = uSize * ( 0.65 + 0.5 * hash( aRipple.x * 0.7 + k * 3.1 ) ); // drops vary in size
+    vec3 p = c + vec3( position.x * s, 0.0, position.z * s );
     vUv = uv; vPhase = phase;
     gl_Position = projectionMatrix * modelViewMatrix * vec4( p, 1.0 );
   }`;
 const RIPPLE_FRAG = `
   uniform vec3 uColor; uniform float uOpacity;
   varying vec2 vUv; varying float vPhase;
+  float ring( float d, float r, float w ) { float x = ( d - r ) / w; return exp( -x * x ); }
   void main() {
     float d = length( vUv - 0.5 ) * 2.0;
-    float ring = smoothstep( 0.7, 0.88, d ) * ( 1.0 - smoothstep( 0.88, 1.0, d ) );
-    gl_FragColor = vec4( uColor, ring * ( 1.0 - vPhase ) * uOpacity );
+    float p = vPhase;
+    float r = p * ( 2.0 - p );        // fast at first, then slowing
+    float w = 0.02 + 0.05 * p;        // rings get softer as they spread
+    float a = ring( d, r, w )
+            + 0.35 * ring( d, r * 0.66, w * 0.9 ) * smoothstep( 0.08, 0.22, p )
+            + 0.15 * ring( d, r * 0.38, w * 0.8 ) * smoothstep( 0.2, 0.36, p );
+    float fade = ( 1.0 - p ) * ( 1.0 - p );
+    float splash = exp( -d * d * 160.0 ) * ( 1.0 - smoothstep( 0.0, 0.16, p ) );
+    float edge = 1.0 - smoothstep( 0.86, 1.0, d ); // never reach the quad's edge
+    gl_FragColor = vec4( uColor, ( a * fade * edge + splash * 0.8 ) * uOpacity );
   }`;
 
 const SNOW_VERT = `
@@ -731,7 +755,75 @@ function weatherObject(obj) {
   return obj;
 }
 
-function buildWeather({ groundY, maxDim }) {
+// Finds points on the flat, upward-facing tops of the letters where a small
+// ripple fits: samples random up-facing triangles (weighted by area), keeps a
+// point only if nothing sits above it and the surface stays flat for the
+// ripple's whole width. Only the letter pieces themselves (P_*, X_*, L_*)
+// count — props and the decorative accent curves are skipped.
+const RIPPLE_TOP_SPOTS = 64;
+function findLetterTopSpots(model, maxDim, wanted) {
+  model.updateMatrixWorld(true);
+  const floaterNames = new Set(FLOATERS.flatMap((f) => f.names));
+  const isFloater = (o) => { for (; o; o = o.parent) if (floaterNames.has(o.name)) return true; return false; };
+  const meshes = [];
+  const isLetter = (o) => { for (; o; o = o.parent) if (/^[PXL]_/.test(o.name)) return true; return false; };
+  model.traverse((o) => { if (o.isMesh && !isFloater(o)) meshes.push(o); });
+  const letterMeshes = meshes.filter(isLetter);
+
+  // Up-facing triangles, in world space.
+  const tris = []; let total = 0;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), nrm = new THREE.Vector3();
+  for (const m of letterMeshes) {
+    const pos = m.geometry.getAttribute('position'), idx = m.geometry.index;
+    const n = idx ? idx.count : pos.count;
+    for (let i = 0; i < n; i += 3) {
+      const i0 = idx ? idx.getX(i) : i, i1 = idx ? idx.getX(i + 1) : i + 1, i2 = idx ? idx.getX(i + 2) : i + 2;
+      a.fromBufferAttribute(pos, i0).applyMatrix4(m.matrixWorld);
+      b.fromBufferAttribute(pos, i1).applyMatrix4(m.matrixWorld);
+      c.fromBufferAttribute(pos, i2).applyMatrix4(m.matrixWorld);
+      nrm.subVectors(c, b).cross(a.clone().sub(b));
+      const len = nrm.length();
+      if (len < 1e-12 || nrm.y / len < 0.97) continue;
+      total += len * 0.5;
+      tris.push({ a: a.clone(), b: b.clone(), c: c.clone(), cum: total });
+    }
+  }
+  if (!tris.length) return [];
+
+  const ray = new THREE.Raycaster();
+  const down = new THREE.Vector3(0, -1, 0);
+  const top = new THREE.Box3().setFromObject(model).max.y + maxDim;
+  const half = maxDim * 0.03 * 0.6; // ripple radius incl. size variation
+  const flatTol = maxDim * 0.004;
+  const hitAt = (x, z) => {
+    ray.set(new THREE.Vector3(x, top, z), down);
+    const h = ray.intersectObjects(meshes, false)[0];
+    if (!h || !h.face) return null;
+    const ny = h.face.normal.clone().transformDirection(h.object.matrixWorld).y;
+    return ny > 0.97 && isLetter(h.object) ? h.point : null;
+  };
+  const spots = [];
+  for (let tries = 0; tries < wanted * 12 && spots.length < wanted; tries++) {
+    const r = Math.random() * total;
+    let lo = 0, hi = tris.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (tris[mid].cum < r) lo = mid + 1; else hi = mid; }
+    const t = tris[lo];
+    let u = Math.random(), v = Math.random();
+    if (u + v > 1) { u = 1 - u; v = 1 - v; }
+    const p = t.a.clone().addScaledVector(t.b.clone().sub(t.a), u).addScaledVector(t.c.clone().sub(t.a), v);
+    const hit = hitAt(p.x, p.z);
+    if (!hit || Math.abs(hit.y - p.y) > flatTol) continue; // something sits above it
+    let flat = true;
+    for (const [dx, dz] of [[half, 0], [-half, 0], [0, half], [0, -half]]) {
+      const q = hitAt(p.x + dx, p.z + dz);
+      if (!q || Math.abs(q.y - p.y) > flatTol) { flat = false; break; }
+    }
+    if (flat) spots.push(new THREE.Vector3(p.x, p.y + maxDim * 0.0015, p.z));
+  }
+  return spots;
+}
+
+function buildWeather({ groundY, maxDim, model }) {
   const span = maxDim * 2.4;   // half-width of the volume the particles fill
   const height = maxDim * 2.2;
   const rnd = () => Math.random() * 2 - 1;
@@ -763,9 +855,8 @@ function buildWeather({ groundY, maxDim }) {
     weather.rain = weatherObject(new THREE.LineSegments(geo, mat));
   }
 
-  // Rain ripples on the floor: expanding rings that each land somewhere new.
-  {
-    const count = isMobile ? 16 : 40;
+  // Rain ripples: on the floor, and on the flat tops of the letters.
+  const makeRipples = (count, uniforms, defines) => {
     const base = new THREE.PlaneGeometry(1, 1);
     base.rotateX(-Math.PI / 2);
     const geo = new THREE.InstancedBufferGeometry();
@@ -777,15 +868,26 @@ function buildWeather({ groundY, maxDim }) {
     geo.setAttribute('aRipple', new THREE.InstancedBufferAttribute(data, 2));
     geo.instanceCount = count;
     const mat = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: { value: 0 }, uRate: { value: 1.3 }, uArea: { value: maxDim * 1.3 },
-        uSize: { value: maxDim * 0.07 }, uFloorY: { value: groundY + 0.002 },
+      uniforms: Object.assign({
+        uTime: { value: 0 }, uRate: { value: 1.1 }, uArea: { value: 0 }, uFloorY: { value: 0 },
         uColor: { value: new THREE.Color() }, uOpacity: { value: 0 },
-      },
+      }, uniforms),
+      defines: defines || {},
       vertexShader: RIPPLE_VERT, fragmentShader: RIPPLE_FRAG,
       transparent: true, depthWrite: false,
     });
-    weather.ripples = weatherObject(new THREE.Mesh(geo, mat));
+    return weatherObject(new THREE.Mesh(geo, mat));
+  };
+  weather.ripples = makeRipples(isMobile ? 16 : 40, {
+    uArea: { value: maxDim * 1.3 }, uSize: { value: maxDim * 0.05 }, uFloorY: { value: groundY + 0.002 },
+  });
+  const spots = findLetterTopSpots(model, maxDim, RIPPLE_TOP_SPOTS);
+  if (spots.length) {
+    while (spots.length < RIPPLE_TOP_SPOTS) spots.push(spots[spots.length % Math.max(1, spots.length)].clone());
+    weather.topRipples = makeRipples(isMobile ? 8 : 18, {
+      uSize: { value: maxDim * 0.03 }, uSpots: { value: spots },
+    }, { SPOTS: '', SPOT_COUNT: RIPPLE_TOP_SPOTS });
+    weather.topRipples.renderOrder = 2; // after the glass, so drops show on it
   }
 
   // Snow: soft round flakes drifting down with a gentle sway.
@@ -826,12 +928,19 @@ function applyWeatherFrame() {
 
   const rainOn = st.rain > 0.001;
   weather.rain.visible = weather.ripples.visible = rainOn;
+  if (weather.topRipples) weather.topRipples.visible = rainOn;
   if (rainOn) {
-    const u = weather.rain.material.uniforms, r = weather.ripples.material.uniforms;
-    u.uTime.value = r.uTime.value = time;
-    u.uColor.value.copy(look.rainColor); r.uColor.value.copy(look.rainColor);
+    const u = weather.rain.material.uniforms;
+    u.uTime.value = time;
+    u.uColor.value.copy(look.rainColor);
     u.uOpacity.value = look.rainOpacity * st.rain;
-    r.uOpacity.value = look.rippleOpacity * st.rain;
+    for (const rp of [weather.ripples, weather.topRipples]) {
+      if (!rp) continue;
+      const r = rp.material.uniforms;
+      r.uTime.value = time;
+      r.uColor.value.copy(look.rainColor);
+      r.uOpacity.value = look.rippleOpacity * st.rain;
+    }
   }
 
   const snowOn = st.snow > 0.001;
@@ -1218,7 +1327,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   controls.minPolarAngle = Math.max(THREE.MathUtils.degToRad(20), initialPolar - THREE.MathUtils.degToRad(35));
   controls.maxPolarAngle = Math.min(THREE.MathUtils.degToRad(92), initialPolar + THREE.MathUtils.degToRad(8));
 
-  buildWeather({ groundY, maxDim });
+  buildWeather({ groundY, maxDim, model });
 
   // Warm up every shader program (physical material + custom rim-light
   // injection, the reflector, bloom, shadow-depth variants) with a hidden
@@ -1232,7 +1341,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   applyThemeMix(themeMix);
   // Weather objects are made visible for the warm-up so their shaders
   // compile now, not on the first click; applyWeatherFrame restores them.
-  [weather.rain, weather.ripples, weather.snow].forEach((o) => { o.visible = true; });
+  [weather.rain, weather.ripples, weather.topRipples, weather.snow].forEach((o) => { if (o) o.visible = true; });
   renderer.compile(scene, camera);
   composer.render();
   applyWeatherFrame(0);
