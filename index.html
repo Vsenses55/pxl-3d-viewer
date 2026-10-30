@@ -305,11 +305,14 @@ const initH = window.innerHeight || 720;
 // (antialiasing, 2x pixel density, a 2048px soft shadow map, a full-res
 // ambient-occlusion pass) can push total GPU memory high enough that
 // mobile Safari kills the tab outright ("A problem repeatedly occurred").
-// Detected once at load via a coarse pointer (touch) or small viewport —
-// trims resolution/quality on those devices without changing anything
-// visually on desktop.
+// Detected once at load via a coarse pointer (touch), a small physical
+// screen, or a mobile user agent — trims resolution/quality on those devices
+// without changing anything visually on desktop. Uses the device's SCREEN
+// size, not this page's window: inside a website pop-up (an iframe) the
+// window is small even on a big desktop, and that shouldn't drop a desktop
+// to the phone tier.
 const isMobile = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
-  || Math.min(initW, initH) <= 820
+  || Math.min(screen.width || 9999, screen.height || 9999) <= 820
   || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
 const renderer = new THREE.WebGLRenderer({ antialias: !isMobile });
