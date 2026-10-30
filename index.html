@@ -538,6 +538,47 @@ composer.addPass(new OutputPass());
 // The light values are exactly the original look. Nothing here adds or
 // removes lights or changes material types, so switching never forces a
 // shader recompile (which would hitch).
+// --- Realistic rain ripples ------------------------------------------------
+// Real puddle ripples aren't drawn lines: each drop sends out a little train
+// of waves that bend whatever the surface reflects. So the ripples here are a
+// wave field, not geometry: the floor's reflection shader and the glossy
+// letter materials both read the same list of drops and tilt their surface
+// normals by it (the floor also shifts its mirror image). Each drop = (x, y,
+// z, start time); JS respawns them as they die. Stays compiled even with rain
+// off (uRipple = 0), so toggling weather never recompiles anything.
+const RIPPLE_FLOOR_DROPS = isMobile ? 14 : 30;
+const RIPPLE_TOP_DROPS = isMobile ? 6 : 14;
+const rippleUniforms = {
+  uRainTime: { value: 0 },
+  uRipple: { value: 0 },        // overall strength (0 = no rain)
+  uRipK: { value: 1 },          // wave number (2*PI / wavelength), set from model size
+  uRipSpeed: { value: 1 },      // how fast the ring front travels
+  uRipLife: { value: 1.25 },    // seconds a ripple lasts
+  uRipAmp: { value: 1 },        // wave height
+  uRipYTol: { value: 0.01 },    // letter-top ripples only touch surfaces at the drop's height
+  uFloorDrops: { value: Array.from({ length: RIPPLE_FLOOR_DROPS }, () => new THREE.Vector4(0, -1e4, 0, -1e4)) },
+  uTopDrops: { value: Array.from({ length: RIPPLE_TOP_DROPS }, () => new THREE.Vector4(0, -1e4, 0, -1e4)) },
+};
+const RIPPLE_GLSL = `
+  uniform float uRainTime; uniform float uRipple; uniform float uRipK; uniform float uRipSpeed;
+  uniform float uRipLife; uniform float uRipAmp; uniform float uRipYTol;
+  // Surface slope (d height / dx, d height / dz) at p from one drop d.
+  vec2 rippleSlope( vec3 p, vec4 d ) {
+    float age = uRainTime - d.w;
+    if ( age < 0.0 || age > uRipLife || abs( p.y - d.y ) > uRipYTol ) return vec2( 0.0 );
+    vec2 dv = p.xz - d.xz;
+    float r = length( dv );
+    float R = uRipSpeed * age;            // leading wave front
+    float lambda = 6.2831853 / uRipK;
+    float W = lambda * 3.2;               // a train of ~3 waves behind the front
+    if ( r > R + lambda || r < R - W - lambda ) return vec2( 0.0 );
+    float env = smoothstep( R - W, R - W * 0.35, r ) * ( 1.0 - smoothstep( R - lambda * 0.35, R + lambda * 0.35, r ) );
+    float life = 1.0 - age / uRipLife;
+    float slope = uRipAmp * life * life * uRipK * cos( uRipK * ( r - R ) ) * env;
+    return dv / max( r, 1e-4 ) * slope;
+  }
+`;
+
 const THEMES = {
   light: {
     bg: ['#fa4f68', '#fd9487', '#ffcda0'], // top, 55%, bottom (middle stop sits on the original 2-color line)
@@ -553,7 +594,7 @@ const THEMES = {
     // white glass parts: see-through amount, frost, and a faint inner glow
     glassTransmission: 0.75, glassFrost: 0.22, glassGlow: 0, glassMobileOpacity: 0.78,
     // weather look
-    rainColor: 0xffffff, rainOpacity: 0.3, rippleOpacity: 0.4,
+    rainColor: 0xffffff, rainOpacity: 0.3, rippleOpacity: 0.32, floorWet: 0.3, splashOpacity: 0.6,
     snowColor: 0xffffff, snowOpacity: 0.95,
   },
   dark: {
@@ -571,7 +612,7 @@ const THEMES = {
     // a soft white inner glow keep it reading as milky white acrylic.
     glassTransmission: 0.4, glassFrost: 0.32, glassGlow: 0.12, glassMobileOpacity: 0.92,
     // weather look
-    rainColor: 0xb4bccf, rainOpacity: 0.24, rippleOpacity: 0.3,
+    rainColor: 0xb4bccf, rainOpacity: 0.24, rippleOpacity: 0.28, floorWet: 0.35, splashOpacity: 0.5,
     snowColor: 0xffffff, snowOpacity: 0.9,
   },
 };
@@ -632,6 +673,8 @@ function applyThemeMix(t) {
   lerpColor(L.snowColor, D.snowColor, t, look.snowColor);
   look.rainOpacity = n(L.rainOpacity, D.rainOpacity);
   look.rippleOpacity = n(L.rippleOpacity, D.rippleOpacity);
+  look.floorWet = n(L.floorWet, D.floorWet);
+  look.splashOpacity = n(L.splashOpacity, D.splashOpacity);
   look.snowOpacity = n(L.snowOpacity, D.snowOpacity);
 }
 
@@ -651,10 +694,10 @@ const weather = {
   current: 'none',
   strength: { rain: 0, snow: 0 },
   target: { rain: 0, snow: 0 },
-  look: { rainColor: new THREE.Color(), rainOpacity: 0, rippleOpacity: 0, snowColor: new THREE.Color(), snowOpacity: 0 },
+  look: { rainColor: new THREE.Color(), rainOpacity: 0, rippleOpacity: 0, floorWet: 0, splashOpacity: 0, snowColor: new THREE.Color(), snowOpacity: 0 },
   time: 0,
   lastT: 0,
-  rain: null, ripples: null, topRipples: null, snow: null,
+  rain: null, splashes: null, drops: null, snow: null,
 };
 
 const RAIN_VERT = `
@@ -674,52 +717,39 @@ const RAIN_FRAG = `
   varying float vHead;
   void main() { gl_FragColor = vec4( uColor, uOpacity * vHead ); }`;
 
-// Raindrop ripples. One quad per ripple; the rings are drawn in the fragment
-// shader. Each landing: a brief bright splash point, then a thin leading ring
-// that races out and slows down, with two fainter rings trailing inside it,
-// all softening and fading as they spread (like a drop on a puddle).
-// SPOTS: instead of anywhere on the floor, land on precomputed points on the
-// tops of the letters (uSpots, found by raycasting at load).
-const RIPPLE_VERT = `
-  uniform float uTime; uniform float uRate; uniform float uArea; uniform float uSize; uniform float uFloorY;
-  #ifdef SPOTS
-  uniform vec3 uSpots[ SPOT_COUNT ];
-  #endif
-  attribute vec2 aRipple; // x: seed, y: phase offset
-  varying vec2 vUv; varying float vPhase;
-  float hash( float n ) { return fract( sin( n ) * 43758.5453 ); }
+// Splashes: a few tiny droplets jump up and fall back where each drop lands
+// (floor and letter tops), using the same drop list as the ripples.
+const SPLASH_PER_DROP = 5;
+const SPLASH_VERT = `
+  uniform float uRainTime; uniform float uUp; uniform float uSpread; uniform float uGravity;
+  uniform float uSize; uniform float uScale;
+  uniform vec4 uFloorDrops[ ${RIPPLE_FLOOR_DROPS} ];
+  uniform vec4 uTopDrops[ ${RIPPLE_TOP_DROPS} ];
+  attribute float aDrop; attribute vec3 aDir;
+  varying float vFade;
   void main() {
-    float cyc = uTime * uRate + aRipple.y;
-    float phase = fract( cyc );
-    float k = floor( cyc ); // each new ripple lands somewhere new
-    #ifdef SPOTS
-    int idx = int( min( floor( hash( aRipple.x + k * 1.7 ) * float( SPOT_COUNT ) ), float( SPOT_COUNT - 1 ) ) );
-    vec3 c = uSpots[ idx ];
-    #else
-    vec2 xz = ( vec2( hash( aRipple.x + k * 1.7 ), hash( aRipple.x * 1.3 + k * 2.9 ) ) * 2.0 - 1.0 ) * uArea;
-    vec3 c = vec3( xz.x, uFloorY, xz.y );
-    #endif
-    float s = uSize * ( 0.65 + 0.5 * hash( aRipple.x * 0.7 + k * 3.1 ) ); // drops vary in size
-    vec3 p = c + vec3( position.x * s, 0.0, position.z * s );
-    vUv = uv; vPhase = phase;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4( p, 1.0 );
+    vec4 d = aDrop < ${RIPPLE_FLOOR_DROPS}.0 ? uFloorDrops[ int( aDrop ) ] : uTopDrops[ int( aDrop ) - ${RIPPLE_FLOOR_DROPS} ];
+    float age = uRainTime - d.w;
+    float T = 0.3;
+    vFade = 0.0;
+    gl_PointSize = 0.0;
+    gl_Position = vec4( 2.0, 2.0, 2.0, 1.0 ); // off-screen unless splashing
+    if ( age > 0.0 && age < T ) {
+      vec3 p = d.xyz + vec3( aDir.x * uSpread * age, aDir.y * uUp * age - 0.5 * uGravity * age * age, aDir.z * uSpread * age );
+      p.y = max( p.y, d.y );
+      vec4 mv = modelViewMatrix * vec4( p, 1.0 );
+      gl_Position = projectionMatrix * mv;
+      gl_PointSize = clamp( uSize * uScale / max( -mv.z, 0.05 ), 1.0, 6.0 );
+      vFade = 1.0 - age / T;
+    }
   }`;
-const RIPPLE_FRAG = `
+const SPLASH_FRAG = `
   uniform vec3 uColor; uniform float uOpacity;
-  varying vec2 vUv; varying float vPhase;
-  float ring( float d, float r, float w ) { float x = ( d - r ) / w; return exp( -x * x ); }
+  varying float vFade;
   void main() {
-    float d = length( vUv - 0.5 ) * 2.0;
-    float p = vPhase;
-    float r = p * ( 2.0 - p );        // fast at first, then slowing
-    float w = 0.02 + 0.05 * p;        // rings get softer as they spread
-    float a = ring( d, r, w )
-            + 0.35 * ring( d, r * 0.66, w * 0.9 ) * smoothstep( 0.08, 0.22, p )
-            + 0.15 * ring( d, r * 0.38, w * 0.8 ) * smoothstep( 0.2, 0.36, p );
-    float fade = ( 1.0 - p ) * ( 1.0 - p );
-    float splash = exp( -d * d * 160.0 ) * ( 1.0 - smoothstep( 0.0, 0.16, p ) );
-    float edge = 1.0 - smoothstep( 0.86, 1.0, d ); // never reach the quad's edge
-    gl_FragColor = vec4( uColor, ( a * fade * edge + splash * 0.8 ) * uOpacity );
+    float dd = length( gl_PointCoord - 0.5 );
+    float a = 1.0 - smoothstep( 0.2, 0.5, dd );
+    gl_FragColor = vec4( uColor, a * vFade * uOpacity );
   }`;
 
 const SNOW_VERT = `
@@ -823,6 +853,28 @@ function findLetterTopSpots(model, maxDim, wanted) {
   return spots;
 }
 
+// Drops are recycled: when one's ripple has died out it lands again somewhere
+// new after a short random pause, so the rain keeps a natural, uneven rhythm.
+function respawnDrop(d, kind, at) {
+  const D = weather.drops;
+  if (kind === 'top') {
+    if (!D.spots.length) { d.set(0, -1e4, 0, -1e4); return; }
+    const s = D.spots[Math.floor(Math.random() * D.spots.length)];
+    d.set(s.x, s.y, s.z, at);
+  } else {
+    const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * D.floorArea;
+    d.set(Math.cos(a) * r, D.floorY, Math.sin(a) * r * 0.8, at);
+  }
+}
+function updateDrops(time) {
+  const life = rippleUniforms.uRipLife.value;
+  for (const kind of ['floor', 'top']) {
+    for (const d of weather.drops[kind]) {
+      if (time - d.w > life) respawnDrop(d, kind, time + Math.random() * 0.35);
+    }
+  }
+}
+
 function buildWeather({ groundY, maxDim, model }) {
   const span = maxDim * 2.4;   // half-width of the volume the particles fill
   const height = maxDim * 2.2;
@@ -855,39 +907,41 @@ function buildWeather({ groundY, maxDim, model }) {
     weather.rain = weatherObject(new THREE.LineSegments(geo, mat));
   }
 
-  // Rain ripples: on the floor, and on the flat tops of the letters.
-  const makeRipples = (count, uniforms, defines) => {
-    const base = new THREE.PlaneGeometry(1, 1);
-    base.rotateX(-Math.PI / 2);
-    const geo = new THREE.InstancedBufferGeometry();
-    geo.index = base.index;
-    geo.setAttribute('position', base.getAttribute('position'));
-    geo.setAttribute('uv', base.getAttribute('uv'));
-    const data = new Float32Array(count * 2);
-    for (let i = 0; i < count; i++) { data[i * 2] = Math.random() * 100; data[i * 2 + 1] = Math.random(); }
-    geo.setAttribute('aRipple', new THREE.InstancedBufferAttribute(data, 2));
-    geo.instanceCount = count;
+  // Rain ripples (wave field read by the floor + letter shaders) and splashes.
+  {
+    rippleUniforms.uRipK.value = (Math.PI * 2) / (maxDim * 0.018);
+    rippleUniforms.uRipSpeed.value = (maxDim * 0.12) / rippleUniforms.uRipLife.value;
+    rippleUniforms.uRipAmp.value = maxDim * 0.0012;
+    rippleUniforms.uRipYTol.value = maxDim * 0.004;
+    const spots = findLetterTopSpots(model, maxDim, RIPPLE_TOP_SPOTS);
+    weather.drops = {
+      floorArea: maxDim * 0.62, floorY: groundY, spots,
+      floor: rippleUniforms.uFloorDrops.value, top: rippleUniforms.uTopDrops.value,
+    };
+    const count = (RIPPLE_FLOOR_DROPS + RIPPLE_TOP_DROPS) * SPLASH_PER_DROP;
+    const drop = new Float32Array(count), dir = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      drop[i] = Math.floor(i / SPLASH_PER_DROP);
+      const a = Math.random() * Math.PI * 2, s = 0.4 + Math.random() * 0.6;
+      dir.set([Math.cos(a) * s, 0.6 + Math.random() * 0.7, Math.sin(a) * s], i * 3);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    geo.setAttribute('aDrop', new THREE.BufferAttribute(drop, 1));
+    geo.setAttribute('aDir', new THREE.BufferAttribute(dir, 3));
     const mat = new THREE.ShaderMaterial({
-      uniforms: Object.assign({
-        uTime: { value: 0 }, uRate: { value: 1.1 }, uArea: { value: 0 }, uFloorY: { value: 0 },
+      uniforms: {
+        uRainTime: rippleUniforms.uRainTime, uFloorDrops: rippleUniforms.uFloorDrops, uTopDrops: rippleUniforms.uTopDrops,
+        uUp: { value: maxDim * 0.16 }, uSpread: { value: maxDim * 0.05 }, uGravity: { value: maxDim * 1.9 },
+        uSize: { value: maxDim * 0.0035 }, uScale: { value: 1 },
         uColor: { value: new THREE.Color() }, uOpacity: { value: 0 },
-      }, uniforms),
-      defines: defines || {},
-      vertexShader: RIPPLE_VERT, fragmentShader: RIPPLE_FRAG,
+      },
+      vertexShader: SPLASH_VERT, fragmentShader: SPLASH_FRAG,
       transparent: true, depthWrite: false,
     });
-    return weatherObject(new THREE.Mesh(geo, mat));
-  };
-  weather.ripples = makeRipples(isMobile ? 16 : 40, {
-    uArea: { value: maxDim * 1.3 }, uSize: { value: maxDim * 0.05 }, uFloorY: { value: groundY + 0.002 },
-  });
-  const spots = findLetterTopSpots(model, maxDim, RIPPLE_TOP_SPOTS);
-  if (spots.length) {
-    while (spots.length < RIPPLE_TOP_SPOTS) spots.push(spots[spots.length % Math.max(1, spots.length)].clone());
-    weather.topRipples = makeRipples(isMobile ? 8 : 18, {
-      uSize: { value: maxDim * 0.03 }, uSpots: { value: spots },
-    }, { SPOTS: '', SPOT_COUNT: RIPPLE_TOP_SPOTS });
-    weather.topRipples.renderOrder = 2; // after the glass, so drops show on it
+    weather.splashes = weatherObject(new THREE.Points(geo, mat));
+    for (const d of weather.drops.floor) respawnDrop(d, 'floor', -Math.random() * 1.5);
+    for (const d of weather.drops.top) respawnDrop(d, 'top', -Math.random() * 1.5);
   }
 
   // Snow: soft round flakes drifting down with a gentle sway.
@@ -927,20 +981,25 @@ function applyWeatherFrame() {
   const st = weather.strength, look = weather.look, time = weather.time;
 
   const rainOn = st.rain > 0.001;
-  weather.rain.visible = weather.ripples.visible = rainOn;
-  if (weather.topRipples) weather.topRipples.visible = rainOn;
+  weather.rain.visible = weather.splashes.visible = rainOn;
+  rippleUniforms.uRipple.value = st.rain;
+  if (themed.reflectorMat) {
+    themed.reflectorMat.uniforms.uWet.value = look.floorWet * st.rain;
+    themed.reflectorMat.uniforms.uRipShine.value = look.rippleOpacity;
+    themed.reflectorMat.uniforms.uRipShineColor.value.copy(look.rainColor);
+  }
   if (rainOn) {
     const u = weather.rain.material.uniforms;
     u.uTime.value = time;
     u.uColor.value.copy(look.rainColor);
     u.uOpacity.value = look.rainOpacity * st.rain;
-    for (const rp of [weather.ripples, weather.topRipples]) {
-      if (!rp) continue;
-      const r = rp.material.uniforms;
-      r.uTime.value = time;
-      r.uColor.value.copy(look.rainColor);
-      r.uOpacity.value = look.rippleOpacity * st.rain;
-    }
+    rippleUniforms.uRainTime.value = time;
+    updateDrops(time);
+    const sp = weather.splashes.material.uniforms;
+    sp.uColor.value.copy(look.rainColor);
+    sp.uOpacity.value = look.splashOpacity * st.rain;
+    renderer.getDrawingBufferSize(_bufSize);
+    sp.uScale.value = (_bufSize.y * 0.5) / Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
   }
 
   const snowOn = st.snow > 0.001;
@@ -1101,19 +1160,38 @@ loader.load('pxl_logo.glb', (gltf) => {
           shader.uniforms.rimColor = { value: new THREE.Color(RIM_COLOR) };
           shader.uniforms.rimPower = { value: RIM_POWER };
           shader.uniforms.rimIntensity = { value: RIM_INTENSITY };
+          Object.assign(shader.uniforms, rippleUniforms); // shared objects: one update reaches every material
           shader.vertexShader = shader.vertexShader
             .replace(
               '#include <common>',
-              `#include <common>\nvarying vec3 vRimNormal;\nvarying vec3 vRimView;`
+              `#include <common>\nvarying vec3 vRimNormal;\nvarying vec3 vRimView;\nvarying vec3 vRipWorld;\nvarying vec3 vRipWN;`
             )
             .replace(
               '#include <begin_vertex>',
-              `#include <begin_vertex>\nvRimNormal = normalize( normalMatrix * normal );\nvRimView = normalize( -( modelViewMatrix * vec4( position, 1.0 ) ).xyz );`
+              `#include <begin_vertex>\nvRimNormal = normalize( normalMatrix * normal );\nvRimView = normalize( -( modelViewMatrix * vec4( position, 1.0 ) ).xyz );\nvRipWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;\nvRipWN = mat3( modelMatrix ) * objectNormal;`
             );
           shader.fragmentShader = shader.fragmentShader
             .replace(
               '#include <common>',
-              `#include <common>\nuniform vec3 rimColor;\nuniform float rimPower;\nuniform float rimIntensity;\nvarying vec3 vRimNormal;\nvarying vec3 vRimView;`
+              `#include <common>\nuniform vec3 rimColor;\nuniform float rimPower;\nuniform float rimIntensity;\nvarying vec3 vRimNormal;\nvarying vec3 vRimView;\nvarying vec3 vRipWorld;\nvarying vec3 vRipWN;\nuniform vec4 uTopDrops[ ${RIPPLE_TOP_DROPS} ];\n${RIPPLE_GLSL}`
+            )
+            .replace(
+              '#include <clearcoat_normal_fragment_maps>',
+              `#include <clearcoat_normal_fragment_maps>
+              // Rain ripples on flat, upward-facing tops: tilt the normal (and the
+              // clearcoat's) so the glossy reflections ripple like a wet surface.
+              if ( uRipple > 0.001 && normalize( vRipWN ).y > 0.9 ) {
+                vec2 rs = vec2( 0.0 );
+                for ( int i = 0; i < ${RIPPLE_TOP_DROPS}; i++ ) rs += rippleSlope( vRipWorld, uTopDrops[ i ] );
+                rs *= uRipple;
+                if ( dot( rs, rs ) > 1e-8 ) {
+                  vec3 rn = normalize( ( viewMatrix * vec4( normalize( vec3( -rs.x, 1.0, -rs.y ) ), 0.0 ) ).xyz );
+                  normal = rn;
+                  #ifdef USE_CLEARCOAT
+                  clearcoatNormal = rn;
+                  #endif
+                }
+              }`
             )
             .replace(
               '#include <dithering_fragment>',
@@ -1190,15 +1268,22 @@ loader.load('pxl_logo.glb', (gltf) => {
   reflMat.uniforms.uIntensity = { value: 0.18 };
   reflMat.uniforms.uTint = { value: 0.5 }; // how much the mirror image is darkened toward `color` (theme-driven)
   reflMat.uniforms.uBlur = { value: 0 }; // glossy blur radius in UV units (0 = sharp, the original light look)
+  Object.assign(reflMat.uniforms, rippleUniforms);
+  reflMat.uniforms.uWet = { value: 0 };          // extra mirror strength while it rains (a wet floor)
+  reflMat.uniforms.uRipDistort = { value: 0.11 };  // how far ripples bend the reflected image
+  reflMat.uniforms.uRipShine = { value: 0 };     // brightness of light caught on ripple slopes (theme)
+  reflMat.uniforms.uRipShineColor = { value: new THREE.Color(0xffffff) };
   reflMat.vertexShader = `
     uniform mat4 textureMatrix;
     varying vec4 vUv;
     varying vec2 vPos;
+    varying vec3 vWorld;
     #include <common>
     #include <logdepthbuf_pars_vertex>
     void main() {
       vUv = textureMatrix * vec4( position, 1.0 );
       vPos = position.xy;
+      vWorld = ( modelMatrix * vec4( position, 1.0 ) ).xyz;
       gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
       #include <logdepthbuf_vertex>
     }
@@ -1210,25 +1295,49 @@ loader.load('pxl_logo.glb', (gltf) => {
     uniform float uIntensity;
     uniform float uTint;
     uniform float uBlur;
+    uniform float uWet;
+    uniform float uRipDistort;
+    uniform float uRipShine;
+    uniform vec3 uRipShineColor;
+    uniform vec4 uFloorDrops[ ${RIPPLE_FLOOR_DROPS} ];
     varying vec4 vUv;
     varying vec2 vPos;
+    varying vec3 vWorld;
+    ${RIPPLE_GLSL}
     #include <logdepthbuf_pars_fragment>
     void main() {
       #include <logdepthbuf_fragment>
+      vec2 rs = vec2( 0.0 );
+      if ( uRipple > 0.001 ) {
+        for ( int i = 0; i < ${RIPPLE_FLOOR_DROPS}; i++ ) {
+          vec4 d = uFloorDrops[ i ];
+          rs += rippleSlope( vec3( vWorld.x, d.y, vWorld.z ), d );
+        }
+        rs *= uRipple;
+      }
       // 9-tap glossy blur, stretched vertically for a wet-floor streak.
       // With uBlur = 0 every tap is the same texel: identical to the
       // original sharp lookup.
-      vec2 ruv = vUv.xy / vUv.w;
-      vec2 o = vec2( uBlur, uBlur * 2.5 );
+      vec2 ruv = vUv.xy / vUv.w + rs * uRipDistort;
+      float blur = uBlur * ( 1.0 - 0.75 * clamp( uWet * 3.0, 0.0, 1.0 ) ); // wet floor = sharper mirror
+      vec2 o = vec2( blur, blur * 2.5 );
       vec4 base = texture2D( tDiffuse, ruv ) * 0.2;
       base += ( texture2D( tDiffuse, ruv + vec2( o.x, 0.0 ) ) + texture2D( tDiffuse, ruv - vec2( o.x, 0.0 ) )
               + texture2D( tDiffuse, ruv + vec2( 0.0, o.y ) ) + texture2D( tDiffuse, ruv - vec2( 0.0, o.y ) ) ) * 0.1;
       base += ( texture2D( tDiffuse, ruv + o ) + texture2D( tDiffuse, ruv - o )
               + texture2D( tDiffuse, ruv + vec2( o.x, -o.y ) ) + texture2D( tDiffuse, ruv + vec2( -o.x, o.y ) ) ) * 0.1;
-      vec3 blended = mix( base.rgb, color, uTint );
+      vec3 blended = mix( base.rgb, color, uTint * ( 1.0 - 0.6 * uWet ) );
       float dist = length( vPos ) / uRadius;
       float edgeFade = 1.0 - smoothstep( 0.25, 1.0, dist );
-      gl_FragColor = vec4( blended, edgeFade * uIntensity );
+      // Light caught on the ripple slopes: wave faces tilted toward the
+      // light brighten, the backs darken, like the bands in a real puddle.
+      vec3 rn = normalize( vec3( -rs.x, 1.0, -rs.y ) );
+      float facing = dot( rn.xz, normalize( vec2( -0.35, 0.94 ) ) ) * 4.0;
+      float lit = clamp( facing, 0.0, 1.0 ), shade = clamp( -facing, 0.0, 1.0 );
+      blended = mix( blended, uRipShineColor, lit * uRipShine );
+      blended *= 1.0 - shade * 0.35 * uRipShine;
+      float alpha = edgeFade * ( uIntensity + uWet + ( lit + shade * 0.5 ) * uRipShine * 0.6 );
+      gl_FragColor = vec4( blended, clamp( alpha, 0.0, 1.0 ) );
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
     }
@@ -1341,7 +1450,7 @@ loader.load('pxl_logo.glb', (gltf) => {
   applyThemeMix(themeMix);
   // Weather objects are made visible for the warm-up so their shaders
   // compile now, not on the first click; applyWeatherFrame restores them.
-  [weather.rain, weather.ripples, weather.topRipples, weather.snow].forEach((o) => { if (o) o.visible = true; });
+  [weather.rain, weather.splashes, weather.snow].forEach((o) => { if (o) o.visible = true; });
   renderer.compile(scene, camera);
   composer.render();
   applyWeatherFrame(0);
