@@ -550,6 +550,8 @@ const THEMES = {
     reflIntensity: 0.18, reflTint: 0.5, reflScale: 1.0, reflBlur: 0,
     blobTint: 1.0,
     contactColor: 0x4a2436, contactOpacity: 0.09,
+    // white glass parts: see-through amount, frost, and a faint inner glow
+    glassTransmission: 0.75, glassFrost: 0.22, glassGlow: 0, glassMobileOpacity: 0.78,
     // weather look
     rainColor: 0xffffff, rainOpacity: 0.3, rippleOpacity: 0.3,
     snowColor: 0xffffff, snowOpacity: 0.95,
@@ -565,6 +567,9 @@ const THEMES = {
     reflIntensity: 0.12, reflTint: 0.5, reflScale: 1.6, reflBlur: 0.006, // a faint, soft sheen on the floor, barely noticeable
     blobTint: 0.05, // the plum blob would read as a lighter smudge on charcoal; darken it
     contactColor: 0x000000, contactOpacity: 0.32,
+    // Against charcoal, clear glass reads grey. Less see-through, more frost and
+    // a soft white inner glow keep it reading as milky white acrylic.
+    glassTransmission: 0.4, glassFrost: 0.32, glassGlow: 0.12, glassMobileOpacity: 0.92,
     // weather look
     rainColor: 0xb4bccf, rainOpacity: 0.24, rippleOpacity: 0.22,
     snowColor: 0xffffff, snowOpacity: 0.9,
@@ -573,6 +578,7 @@ const THEMES = {
 
 // Filled in once the model has loaded (they don't exist before that).
 const physicalMats = [];
+const glassMats = [];
 const themed = { reflector: null, reflectorMat: null, blobMat: null, groundMat: null };
 
 const _cA = new THREE.Color(), _cB = new THREE.Color();
@@ -598,6 +604,14 @@ function applyThemeMix(t) {
   lerpColor(L.rimColor, D.rimColor, t, rim.color);
   rim.intensity = n(L.rim, D.rim);
   for (let i = 0; i < physicalMats.length; i++) physicalMats[i].envMapIntensity = n(L.envMap, D.envMap);
+  for (let i = 0; i < glassMats.length; i++) {
+    const g = glassMats[i];
+    g.roughness = n(L.glassFrost, D.glassFrost);
+    g.emissiveIntensity = n(L.glassGlow, D.glassGlow);
+    // transmission stays > 0 in both themes (crossing 0 would recompile the shader)
+    if (isMobile) g.opacity = n(L.glassMobileOpacity, D.glassMobileOpacity);
+    else g.transmission = n(L.glassTransmission, D.glassTransmission);
+  }
   bloomPass.strength = n(L.bloomStrength, D.bloomStrength);
   bloomPass.radius = n(L.bloomRadius, D.bloomRadius);
   bloomPass.threshold = n(L.bloomThreshold, D.bloomThreshold);
@@ -940,6 +954,9 @@ loader.load('pxl_logo.glb', (gltf) => {
         });
         if (isGlass) {
           physical.roughness = GLASS.roughness;
+          physical.emissive.set(0xffffff); // strength set per theme (glassGlow)
+          physical.emissiveIntensity = 0;
+          glassMats.push(physical);
           physical.sheen = 0; // sheen would fog the glass
           obj.castShadow = false; // glass shouldn't throw a solid shadow
           if (isMobile) {
