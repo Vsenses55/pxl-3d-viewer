@@ -173,9 +173,9 @@
   // Resolve the theme before first paint so the loading screen already
   // matches it. Priority: the visitor's own saved choice, then ?theme=dark
   // or ?theme=light in the URL (lets an embedding page pick the default),
-  // then light.
+  // then dark.
   (function () {
-    var theme = 'light';
+    var theme = 'dark'; // default look for first-time visitors
     try {
       var q = new URLSearchParams(location.search).get('theme');
       if (q === 'dark' || q === 'light') theme = q;
@@ -1042,13 +1042,13 @@ function setWeather(name, persist) {
 weatherBtns.forEach((b) => b.addEventListener('click', () => {
   setWeather(weather.current === b.dataset.weather ? 'none' : b.dataset.weather, true);
 }));
-// Starting weather: the visitor's own saved choice, then ?weather=rain|snow
-// in the URL (handy for demos and embeds), then none.
+// Starting weather: the visitor's own saved choice, then ?weather=rain|snow|none
+// in the URL (handy for demos and embeds), then rain (the default look).
 (function () {
-  let w = 'none';
+  let w = 'rain';
   try {
     const q = new URLSearchParams(location.search).get('weather');
-    if (WEATHER_TYPES.includes(q)) w = q;
+    if (q === 'none' || WEATHER_TYPES.includes(q)) w = q;
     const saved = localStorage.getItem('pxl-viewer-weather');
     if (saved === 'none' || WEATHER_TYPES.includes(saved)) w = saved;
   } catch (e) {}
@@ -1428,8 +1428,14 @@ loader.load('pxl_logo.glb', (gltf) => {
 
   const maxDim = Math.max(size.x, size.y, size.z);
   const dist = maxDim * 3.3;
-  camera.position.set(0, size.y * 0.35, dist);
-  controls.target.set(0, 0, 0);
+  // Starting view: looking down on the piece at a slight angle (CAMERA_TILT_DEG
+  // above level), aimed a little below its center so the letters sit high in
+  // the frame with the floor reflection below.
+  const CAMERA_TILT_DEG = 13;
+  const tilt = THREE.MathUtils.degToRad(CAMERA_TILT_DEG);
+  const aimY = -size.y * 0.12;
+  camera.position.set(0, aimY + Math.sin(tilt) * dist, Math.cos(tilt) * dist);
+  controls.target.set(0, aimY, 0);
   controls.update();
 
   // Lock the vertical drag range to roughly this framing: a little more room
